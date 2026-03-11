@@ -247,7 +247,7 @@ function renderSearchResult(result) {
       lines.push(`${index + 1}. ${JSON.stringify(job)}`);
     });
   } else {
-    lines.push('preview: (空结果，符合当前占位实现)');
+    lines.push('preview: (空结果)');
   }
 
   elements.searchResults.textContent = `${lines.join('\n')}\n`;
@@ -451,8 +451,8 @@ async function readMcpCapabilities() {
   try {
     const capabilities = await window.desktopApi.getMcpBossCapabilities();
     const text = `login=${capabilities.login.implemented}, search=${capabilities.search.implemented}, greeting=${capabilities.greeting.implemented}`;
-    setStatus(elements.mcpCapabilitiesText, `预留能力：${text}`);
-    appendLog(`读取 mcp 预留能力：${text}`);
+    setStatus(elements.mcpCapabilitiesText, `MCP 能力：${text}`);
+    appendLog(`读取 mcp 能力：${text}`);
   } catch (error) {
     setStatus(elements.mcpCapabilitiesText, `读取失败: ${getErrorMessage(error)}`, 'error');
   }
@@ -463,7 +463,7 @@ async function readMcpLoginStatus() {
     const result = await window.desktopApi.getMcpBossLoginStatus();
     const text = `${result.phase} | ${result.message}`;
     setStatus(elements.mcpLoginText, text);
-    appendLog(`登录状态占位接口返回：${text}`);
+    appendLog(`登录状态接口返回：${text}`);
   } catch (error) {
     setStatus(elements.mcpLoginText, `读取失败: ${getErrorMessage(error)}`, 'error');
   }
@@ -474,14 +474,14 @@ async function requestMcpLoginQr() {
     const result = await window.desktopApi.requestMcpBossLoginQr();
     const text = `${result.phase} | ${result.message}`;
     setStatus(elements.mcpLoginText, text);
-    appendLog(`二维码占位接口返回：${text}`);
+    appendLog(`登录接口返回：${text}`);
   } catch (error) {
     setStatus(elements.mcpLoginText, `请求失败: ${getErrorMessage(error)}`, 'error');
   }
 }
 
 async function runSearchSkeleton() {
-  setStatus(elements.searchStatus, '正在调用搜索占位接口...');
+  setStatus(elements.searchStatus, '正在调用搜索接口...');
 
   try {
     const response = await window.desktopApi.runnerSearchOnce({

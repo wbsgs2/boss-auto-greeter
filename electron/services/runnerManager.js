@@ -66,19 +66,19 @@ class RunnerManager extends EventEmitter {
     return this.getSnapshot();
   }
 
-  searchOnce(payload = {}) {
+  async searchOnce(payload = {}) {
     const { jobSearch } = this.resolvePayload(payload);
-    const result = this.mcpBossManager.searchJobs(jobSearch);
+    const result = await this.mcpBossManager.searchJobs(jobSearch);
     const jobs = Array.isArray(result.jobs) ? result.jobs : [];
 
     this.lastSearchResult = result;
     this.stats.searchCalls += 1;
     this.stats.searchedJobs += jobs.length;
-    this.stats.lastAction = '搜索占位调用完成';
+    this.stats.lastAction = '搜索调用完成';
 
     this.touchState();
     this.emitState();
-    this.emitLog('info', result.message || '搜索占位调用完成');
+    this.emitLog('info', result.message || '搜索调用完成');
 
     return {
       ok: true,
@@ -112,7 +112,7 @@ class RunnerManager extends EventEmitter {
     };
   }
 
-  runCycle(payload = {}) {
+  async runCycle(payload = {}) {
     if (this.phase !== 'running') {
       return {
         ok: false,
@@ -128,7 +128,7 @@ class RunnerManager extends EventEmitter {
       `执行骨架任务：dryRun=${runConfig.dryRun} maxJobsPerRun=${runConfig.maxJobsPerRun}`
     );
 
-    const searchResponse = this.searchOnce(payload);
+    const searchResponse = await this.searchOnce(payload);
     const searchResult = searchResponse.result;
     const jobs = Array.isArray(searchResult.jobs) ? searchResult.jobs : [];
     const selectedJobs = Math.min(jobs.length, runConfig.maxJobsPerRun);
@@ -143,10 +143,6 @@ class RunnerManager extends EventEmitter {
 
     if (runConfig.autoStartAfterSearch) {
       this.emitLog('info', '已开启“搜索后自动进入发送阶段（预留）”，当前仍为骨架流程。');
-    }
-
-    if (!searchResult.implemented) {
-      this.emitLog('info', '当前岗位列表为占位模拟数据，真实 mcp-boss 搜索尚未接入。');
     }
 
     this.touchState();
