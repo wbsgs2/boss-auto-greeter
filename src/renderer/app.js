@@ -9,10 +9,11 @@ const elements = {
 
   aiConfigForm: document.querySelector('#ai-config-form'),
   apiKey: document.querySelector('#api-key'),
-  mcpPath: document.querySelector('#mcp-path'),
+  model: document.querySelector('#model'),
+  testConnectionBtn: document.querySelector('#test-connection-btn'),
   aiStatus: document.querySelector('#ai-status'),
   apiKeyMask: document.querySelector('#api-key-mask'),
-  mcpPathText: document.querySelector('#mcp-path-text'),
+  installNotice: document.querySelector('#install-notice'),
 
   loginStartBtn: document.querySelector('#login-start-btn'),
   loginRefreshBtn: document.querySelector('#login-refresh-btn'),
@@ -96,23 +97,18 @@ function applyConfig(config) {
   const ai = config?.ai || {};
   const jobSearch = config?.jobSearch || {};
   const preferences = config?.preferences || {};
-  const mcpBoss = config?.mcpBoss || {};
 
   elements.searchKeyword.value = jobSearch.keyword ?? preferences.keyword ?? '';
   elements.searchCity.value = jobSearch.city ?? preferences.city ?? '';
   elements.searchSalary.value = jobSearch.salaryRange || '';
   elements.searchExperience.value = jobSearch.experience || '';
   elements.searchEducation.value = jobSearch.education || '';
-  elements.mcpPath.value = mcpBoss.path || '';
+  elements.model.value = ai.model || 'Qwen/Qwen2.5-7B-Instruct';
 
   const masked = ai.apiKeyMasked || '';
   elements.apiKeyMask.textContent = masked
     ? `当前已保存：${masked}`
     : '当前还没有保存 API Key。';
-
-  elements.mcpPathText.textContent = mcpBoss.path
-    ? `当前路径：${mcpBoss.path}`
-    : '首次使用前，请先填写本地服务路径。';
 }
 
 function normalizeQrSrc(value) {
@@ -209,28 +205,32 @@ function applyManagerStatus(status) {
   const phase = String(status?.phase || '');
   const message = String(status?.message || '').trim();
 
+  if (elements.installNotice) {
+    elements.installNotice.hidden = phase !== 'not-installed';
+  }
+
   if (!message) {
     return;
   }
 
   if (phase === 'starting') {
-    elements.loginPhaseBadge.textContent = '启动中';
+    elements.loginPhaseBadge.textContent = '准备中';
     elements.loginPhaseBadge.className = 'status-badge waiting';
-    elements.loginStatusText.textContent = message;
+    elements.loginStatusText.textContent = '正在准备登录环境，请稍后重试。';
     return;
   }
 
-  if (phase === 'not-configured') {
-    elements.loginPhaseBadge.textContent = '需要配置';
+  if (phase === 'not-installed') {
+    elements.loginPhaseBadge.textContent = '需要安装';
     elements.loginPhaseBadge.className = 'status-badge error';
-    elements.loginStatusText.textContent = message;
+    elements.loginStatusText.textContent = '请先安装登录助手，安装链接已显示在 AI 配置页。';
     return;
   }
 
   if (phase === 'error') {
     elements.loginPhaseBadge.textContent = '稍后重试';
     elements.loginPhaseBadge.className = 'status-badge error';
-    elements.loginStatusText.textContent = message;
+    elements.loginStatusText.textContent = '暂时无法完成准备，请稍后重试。';
   }
 }
 
@@ -298,24 +298,14 @@ async function saveAIConfig(event) {
   event.preventDefault();
 
   const apiKey = elements.apiKey.value.trim();
-  const mcpPath = elements.mcpPath.value.trim();
+  const payload = {
+    ai: {
+      model: elements.model.value
+    }
+  };
 
-  if (!apiKey && !mcpPath) {
-    setStatus(elements.aiStatus, '请至少填写 API Key 或 mcp-boss 路径。', 'error');
-    return;
-  }
-
-  const payload = {};
   if (apiKey) {
-    payload.ai = {
-      apiKey
-    };
-  }
-
-  if (mcpPath) {
-    payload.mcpBoss = {
-      path: mcpPath
-    };
+    payload.ai.apiKey = apiKey;
   }
 
   try {
@@ -327,6 +317,32 @@ async function saveAIConfig(event) {
   } catch (error) {
     reportError('saveAIConfig', error);
     setStatus(elements.aiStatus, '保存失败，请稍后重试。', 'error');
+  }
+}
+
+async function testConnection() {
+  const payload = {
+    model: elements.model.value
+  };
+
+  const apiKey = elements.apiKey.value.trim();
+  if (apiKey) {
+    payload.apiKey = apiKey;
+  }
+
+  setStatus(elements.aiStatus, '正在测试连接...');
+
+  try {
+    const result = await window.desktopApi.testSiliconFlowConnection(payload);
+    if (result?.ok) {
+      setStatus(elements.aiStatus, `连接成功，响应 ${result.latencyMs}ms。`, 'success');
+      return;
+    }
+
+    setStatus(elements.aiStatus, result?.error || '连接失败，请稍后再试。', 'error');
+  } catch (error) {
+    reportError('testConnection', error);
+    setStatus(elements.aiStatus, '连接失败，请检查 API Key。', 'error');
   }
 }
 
@@ -365,7 +381,7 @@ async function startLogin() {
     reportError('startLogin', error);
     const message = error?.message || '暂时无法获取二维码，请稍后再试。';
     applyManagerStatus({
-      phase: message.includes('配置') ? 'not-configured' : 'error',
+      phase: message.includes('安装') ? 'not-installed' : 'error',
       message
     });
     elements.loginQrImage.hidden = true;
@@ -409,6 +425,7 @@ function bindEvents() {
   });
 
   elements.aiConfigForm.addEventListener('submit', saveAIConfig);
+  elements.testConnectionBtn.addEventListener('click', testConnection);
   elements.loginStartBtn.addEventListener('click', startLogin);
   elements.loginRefreshBtn.addEventListener('click', () => refreshLoginStatus());
   elements.searchForm.addEventListener('submit', runSearch);
@@ -437,6 +454,12 @@ async function init() {
   }
 
   await loadConfig();
+  try {
+    const status = await window.desktopApi.getMcpBossStatus();
+    applyManagerStatus(status);
+  } catch (error) {
+    reportError('getMcpBossStatus', error);
+  }
   await refreshLoginStatus({ silent: true });
 }
 

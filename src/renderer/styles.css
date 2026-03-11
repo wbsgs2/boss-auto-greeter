@@ -35,7 +35,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -190,7 +191,8 @@ label {
 }
 
 input[type='text'],
-input[type='password'] {
+input[type='password'],
+select {
   height: 48px;
   border: 1px solid rgba(128, 151, 181, 0.28);
   border-radius: 16px;
@@ -258,6 +260,15 @@ button.secondary {
 
 .helper-text {
   color: var(--muted);
+}
+
+.helper-text a {
+  color: var(--primary-strong);
+  text-decoration: none;
+}
+
+.helper-text a:hover {
+  text-decoration: underline;
 }
 
 .login-layout {

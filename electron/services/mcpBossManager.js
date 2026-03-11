@@ -1,5 +1,11 @@
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
+
+const INSTALL_URL = 'https://github.com/mucsbr/mcp-bosszp';
+const SCRIPT_CANDIDATES = ['mcp_boss.py', 'boss_zhipin_fastmcp_v2.py'];
 
 class McpBossManager extends EventEmitter {
   constructor() {
@@ -10,6 +16,7 @@ class McpBossManager extends EventEmitter {
     this.healthcheckTimeoutMs = 3 * 1000;
     this.startupWaitMs = 15 * 1000;
     this.servicePath = '';
+    this.serviceScript = '';
     this.startingPromise = null;
     this.requestId = 0;
     this.status = {
@@ -29,6 +36,7 @@ class McpBossManager extends EventEmitter {
   configure(config = {}) {
     const remoteUrl = String(config.remoteUrl || '').trim();
     this.servicePath = String(config.path ?? config.cwd ?? '').trim();
+    this.serviceScript = '';
     this.lastConfig = this.buildLaunchConfig(config);
     this.remoteUrl = remoteUrl || 'http://127.0.0.1:8000/mcp';
     this.updateStatus({
@@ -38,10 +46,11 @@ class McpBossManager extends EventEmitter {
   }
 
   buildLaunchConfig(config = {}) {
-    if (this.servicePath) {
+    const detected = this.detectInstalledService(config);
+    if (detected) {
       return {
         command: 'python',
-        args: ['mcp_boss.py'],
+        args: [this.serviceScript],
         cwd: this.servicePath
       };
     }
@@ -55,7 +64,7 @@ class McpBossManager extends EventEmitter {
 
   describeCommand(config) {
     if (!config.command) {
-      return '未配置本地服务路径';
+      return '尚未检测到本地服务';
     }
 
     return [config.command, ...config.args].join(' ');
@@ -73,10 +82,12 @@ class McpBossManager extends EventEmitter {
       return this.getStatus();
     }
 
+    this.lastConfig = this.buildLaunchConfig(this.lastConfig);
+
     if (!this.lastConfig.command) {
       this.updateStatus({
-        phase: 'not-configured',
-        message: '请先在 AI 配置中填写 mcp-boss 路径',
+        phase: 'not-installed',
+        message: `请先安装 mcp-boss：${INSTALL_URL}`,
         pid: null,
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
@@ -397,11 +408,13 @@ class McpBossManager extends EventEmitter {
   }
 
   buildUnavailableResult() {
+    this.lastConfig = this.buildLaunchConfig(this.lastConfig);
+
     if (!this.lastConfig.command || !this.lastConfig.cwd) {
       return {
         ok: false,
-        phase: 'not-configured',
-        message: '请先在 AI 配置中填写 mcp-boss 路径'
+        phase: 'not-installed',
+        message: `请先安装 mcp-boss：${INSTALL_URL}`
       };
     }
 
@@ -479,6 +492,68 @@ class McpBossManager extends EventEmitter {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  detectInstalledService(config = {}) {
+    const candidates = this.resolveCandidateDirs(config);
+
+    for (const dir of candidates) {
+      const script = this.findScriptInDir(dir);
+      if (!script) {
+        continue;
+      }
+
+      this.servicePath = dir;
+      this.serviceScript = script;
+      return true;
+    }
+
+    this.serviceScript = '';
+    return false;
+  }
+
+  resolveCandidateDirs(config = {}) {
+    const values = new Set();
+    const pushValue = (input) => {
+      const text = String(input || '').trim();
+      if (!text) {
+        return;
+      }
+      values.add(path.resolve(text));
+    };
+
+    pushValue(this.servicePath);
+    pushValue(config.path);
+    pushValue(config.cwd);
+    pushValue(process.env.MCP_BOSS_PATH);
+    pushValue(path.join(process.cwd(), 'mcp-bosszp'));
+    pushValue(path.join(process.cwd(), 'mcp-boss'));
+    pushValue(path.join(os.homedir(), 'mcp-bosszp'));
+    pushValue(path.join(os.homedir(), 'mcp-boss'));
+    pushValue(path.join(os.homedir(), 'projects', 'mcp-bosszp'));
+    pushValue(path.join(os.homedir(), 'projects', 'mcp-boss'));
+    pushValue(path.join(os.homedir(), 'workspace', 'mcp-bosszp'));
+    pushValue(path.join(os.homedir(), 'workspace', 'mcp-boss'));
+
+    return Array.from(values);
+  }
+
+  findScriptInDir(dir) {
+    try {
+      if (!dir || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        return '';
+      }
+    } catch (_error) {
+      return '';
+    }
+
+    for (const filename of SCRIPT_CANDIDATES) {
+      if (fs.existsSync(path.join(dir, filename))) {
+        return filename;
+      }
+    }
+
+    return '';
   }
 
   async callRemoteMethod(name, params = {}) {
