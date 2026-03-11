@@ -2,6 +2,13 @@ const state = {
   loginQrSrc: ''
 };
 
+const FALLBACK_MODELS = [
+  'Qwen/Qwen2.5-7B-Instruct',
+  'Qwen/Qwen2.5-14B-Instruct',
+  'Qwen/Qwen2.5-32B-Instruct',
+  'deepseek-ai/DeepSeek-V2.5'
+];
+
 const elements = {
   tabButtons: document.querySelectorAll('.tab-button'),
   panels: document.querySelectorAll('.tab-panel'),
@@ -93,6 +100,20 @@ function collectSearchPayload() {
   };
 }
 
+function setModelOptions(models, selectedModel = '') {
+  const options = Array.from(new Set(
+    (Array.isArray(models) && models.length > 0 ? models : FALLBACK_MODELS)
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  ));
+
+  elements.model.innerHTML = options
+    .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
+    .join('');
+
+  elements.model.value = options.includes(selectedModel) ? selectedModel : (options[0] || FALLBACK_MODELS[0]);
+}
+
 function applyConfig(config) {
   const ai = config?.ai || {};
   const jobSearch = config?.jobSearch || {};
@@ -103,7 +124,7 @@ function applyConfig(config) {
   elements.searchSalary.value = jobSearch.salaryRange || '';
   elements.searchExperience.value = jobSearch.experience || '';
   elements.searchEducation.value = jobSearch.education || '';
-  elements.model.value = ai.model || 'Qwen/Qwen2.5-7B-Instruct';
+  setModelOptions(FALLBACK_MODELS, ai.model || FALLBACK_MODELS[0]);
 
   const masked = ai.apiKeyMasked || '';
   elements.apiKeyMask.textContent = masked
@@ -206,10 +227,22 @@ function applyManagerStatus(status) {
   const message = String(status?.message || '').trim();
 
   if (elements.installNotice) {
-    elements.installNotice.hidden = phase !== 'not-installed';
+    elements.installNotice.hidden = !(
+      phase === 'not-installed' ||
+      phase === 'installing' ||
+      (phase === 'error' && message.includes('安装'))
+    );
   }
 
   if (!message) {
+    return;
+  }
+
+  if (phase === 'installing') {
+    setStatus(elements.aiStatus, message);
+    elements.loginPhaseBadge.textContent = '准备中';
+    elements.loginPhaseBadge.className = 'status-badge waiting';
+    elements.loginStatusText.textContent = '首次使用需要准备环境，请稍后。';
     return;
   }
 
@@ -228,6 +261,7 @@ function applyManagerStatus(status) {
   }
 
   if (phase === 'error') {
+    setStatus(elements.aiStatus, '暂时无法完成准备，请稍后重试。', 'error');
     elements.loginPhaseBadge.textContent = '稍后重试';
     elements.loginPhaseBadge.className = 'status-badge error';
     elements.loginStatusText.textContent = '暂时无法完成准备，请稍后重试。';
@@ -295,7 +329,7 @@ async function loadConfig() {
 }
 
 async function saveAIConfig(event) {
-  event.preventDefault();
+  event?.preventDefault?.();
 
   const apiKey = elements.apiKey.value.trim();
   const payload = {
@@ -312,11 +346,48 @@ async function saveAIConfig(event) {
     const saved = await window.desktopApi.saveConfig(payload);
 
     applyConfig(saved);
+    await loadAvailableModels();
     elements.apiKey.value = '';
     setStatus(elements.aiStatus, '已保存。', 'success');
   } catch (error) {
     reportError('saveAIConfig', error);
     setStatus(elements.aiStatus, '保存失败，请稍后重试。', 'error');
+  }
+}
+
+async function saveAIConfigSilently() {
+  try {
+    const payload = {
+      ai: {
+        model: elements.model.value
+      }
+    };
+
+    if (elements.apiKey.value.trim()) {
+      payload.ai.apiKey = elements.apiKey.value.trim();
+    }
+
+    await window.desktopApi.saveConfig(payload);
+    const refreshed = await window.desktopApi.getConfig();
+    applyConfig(refreshed);
+    await loadAvailableModels();
+
+    if (elements.apiKey.value.trim()) {
+      elements.apiKey.value = '';
+    }
+  } catch (error) {
+    reportError('saveAIConfigSilently', error);
+  }
+}
+
+async function loadAvailableModels() {
+  try {
+    const currentModel = elements.model.value || FALLBACK_MODELS[0];
+    const result = await window.desktopApi.getSiliconFlowModels();
+    setModelOptions(result?.models || FALLBACK_MODELS, currentModel);
+  } catch (error) {
+    reportError('loadAvailableModels', error);
+    setModelOptions(FALLBACK_MODELS, elements.model.value || FALLBACK_MODELS[0]);
   }
 }
 
@@ -426,6 +497,12 @@ function bindEvents() {
 
   elements.aiConfigForm.addEventListener('submit', saveAIConfig);
   elements.testConnectionBtn.addEventListener('click', testConnection);
+  elements.apiKey.addEventListener('blur', () => {
+    saveAIConfigSilently();
+  });
+  elements.model.addEventListener('change', () => {
+    saveAIConfigSilently();
+  });
   elements.loginStartBtn.addEventListener('click', startLogin);
   elements.loginRefreshBtn.addEventListener('click', () => refreshLoginStatus());
   elements.searchForm.addEventListener('submit', runSearch);
@@ -454,6 +531,7 @@ async function init() {
   }
 
   await loadConfig();
+  await loadAvailableModels();
   try {
     const status = await window.desktopApi.getMcpBossStatus();
     applyManagerStatus(status);

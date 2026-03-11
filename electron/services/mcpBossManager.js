@@ -17,6 +17,7 @@ class McpBossManager extends EventEmitter {
     this.startupWaitMs = 15 * 1000;
     this.servicePath = '';
     this.serviceScript = '';
+    this.defaultInstallDir = path.join(os.homedir(), 'mcp-bosszp');
     this.startingPromise = null;
     this.requestId = 0;
     this.status = {
@@ -365,20 +366,8 @@ class McpBossManager extends EventEmitter {
       return this.buildUnavailableResult();
     }
 
-    if (!this.lastConfig.command || !this.lastConfig.cwd) {
-      const result = this.buildUnavailableResult();
-      this.updateStatus({
-        phase: 'not-configured',
-        message: result.message,
-        pid: null,
-        startedAt: null,
-        commandSummary: this.describeCommand(this.lastConfig)
-      });
-      return result;
-    }
-
     if (!this.startingPromise) {
-      this.startingPromise = this.startAndWaitUntilAccessible();
+      this.startingPromise = this.installAndStartIfNeeded();
       this.startingPromise.finally(() => {
         this.startingPromise = null;
       });
@@ -394,7 +383,7 @@ class McpBossManager extends EventEmitter {
     } catch (error) {
       return {
         ok: false,
-        phase: 'starting',
+        phase: this.status.phase || 'starting',
         message: error.message || 'mcp-boss 服务启动中，请稍后重试'
       };
     }
@@ -431,6 +420,94 @@ class McpBossManager extends EventEmitter {
       phase: 'not-running',
       message: '本地服务暂时不可用，请稍后重试'
     };
+  }
+
+  async installAndStartIfNeeded() {
+    try {
+      this.lastConfig = this.buildLaunchConfig(this.lastConfig);
+
+      if (!this.lastConfig.command || !this.lastConfig.cwd) {
+        await this.installService();
+        this.lastConfig = this.buildLaunchConfig(this.lastConfig);
+      }
+
+      if (!this.lastConfig.command || !this.lastConfig.cwd) {
+        throw new Error(`请先安装 mcp-boss：${INSTALL_URL}`);
+      }
+
+      return this.startAndWaitUntilAccessible();
+    } catch (error) {
+      this.updateStatus({
+        phase: 'error',
+        message: error.message || '准备本地服务失败',
+        pid: null,
+        startedAt: null,
+        commandSummary: this.describeCommand(this.lastConfig)
+      });
+      throw error;
+    }
+  }
+
+  async installService() {
+    const installDir = this.defaultInstallDir;
+    const repoExists = fs.existsSync(path.join(installDir, '.git'));
+
+    if (!fs.existsSync(installDir)) {
+      this.updateStatus({
+        phase: 'installing',
+        message: '正在下载 mcp-boss...',
+        pid: null,
+        startedAt: null,
+        commandSummary: ''
+      });
+
+      await this.runCommand('git', ['clone', INSTALL_URL, installDir], {
+        cwd: os.homedir(),
+        label: '下载 mcp-boss'
+      });
+    } else if (repoExists) {
+      this.updateStatus({
+        phase: 'installing',
+        message: '正在更新 mcp-boss...',
+        pid: null,
+        startedAt: null,
+        commandSummary: ''
+      });
+
+      await this.runCommand('git', ['-C', installDir, 'pull'], {
+        cwd: installDir,
+        label: '更新 mcp-boss'
+      });
+    }
+
+    this.updateStatus({
+      phase: 'installing',
+      message: '正在安装依赖...',
+      pid: null,
+      startedAt: null,
+      commandSummary: ''
+    });
+
+    await this.runCommand('python', ['-m', 'pip', 'install', '-r', 'requirements.txt'], {
+      cwd: installDir,
+      label: '安装依赖'
+    });
+
+    this.updateStatus({
+      phase: 'installing',
+      message: '正在安装浏览器依赖...',
+      pid: null,
+      startedAt: null,
+      commandSummary: ''
+    });
+
+    await this.runCommand('python', ['-m', 'playwright', 'install', 'chromium'], {
+      cwd: installDir,
+      label: '安装浏览器依赖'
+    });
+
+    this.servicePath = installDir;
+    this.serviceScript = this.findScriptInDir(installDir);
   }
 
   async startAndWaitUntilAccessible() {
@@ -492,6 +569,47 @@ class McpBossManager extends EventEmitter {
     } finally {
       clearTimeout(timeoutId);
     }
+  }
+
+  runCommand(command, args, { cwd, label }) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd,
+        shell: process.platform === 'win32',
+        env: process.env
+      });
+
+      child.stdout?.on('data', (chunk) => {
+        this.emit('log', {
+          level: 'info',
+          source: 'mcp-boss-installer',
+          time: new Date().toISOString(),
+          message: chunk.toString().trim()
+        });
+      });
+
+      child.stderr?.on('data', (chunk) => {
+        this.emit('log', {
+          level: 'error',
+          source: 'mcp-boss-installer',
+          time: new Date().toISOString(),
+          message: chunk.toString().trim()
+        });
+      });
+
+      child.on('error', (error) => {
+        reject(new Error(`${label}失败：${error.message}`));
+      });
+
+      child.on('exit', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(`${label}失败（code=${code}）`));
+      });
+    });
   }
 
   detectInstalledService(config = {}) {

@@ -1,6 +1,73 @@
+const DEFAULT_MODELS = Object.freeze([
+  'Qwen/Qwen2.5-7B-Instruct',
+  'Qwen/Qwen2.5-14B-Instruct',
+  'Qwen/Qwen2.5-32B-Instruct',
+  'deepseek-ai/DeepSeek-V2.5'
+]);
+
 class SiliconFlowClient {
   constructor(configStore) {
     this.configStore = configStore;
+  }
+
+  async getAvailableModels(payload = {}) {
+    const config = this.configStore.getFullConfig();
+    const apiKeyInput = payload.apiKey;
+    const apiKey = typeof apiKeyInput === 'string' && apiKeyInput.trim()
+      ? apiKeyInput.trim()
+      : this.configStore.getApiKey();
+    const baseUrl = String(payload.baseUrl || config.ai.baseUrl || '').trim();
+
+    if (!apiKey || !baseUrl) {
+      return {
+        ok: false,
+        models: DEFAULT_MODELS.slice(),
+        source: 'fallback'
+      };
+    }
+
+    const requestUrl = `${baseUrl.replace(/\/+$/, '')}/models`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    try {
+      const response = await fetch(requestUrl, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${apiKey}`
+        },
+        signal: controller.signal
+      });
+
+      const data = await response.json().catch(() => ({}));
+      const models = Array.isArray(data?.data)
+        ? data.data
+          .map((item) => String(item?.id || '').trim())
+          .filter(Boolean)
+        : [];
+
+      if (!response.ok || models.length === 0) {
+        return {
+          ok: false,
+          models: DEFAULT_MODELS.slice(),
+          source: 'fallback'
+        };
+      }
+
+      return {
+        ok: true,
+        models,
+        source: 'remote'
+      };
+    } catch (_error) {
+      return {
+        ok: false,
+        models: DEFAULT_MODELS.slice(),
+        source: 'fallback'
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   async testConnection(payload = {}) {
@@ -106,5 +173,6 @@ class SiliconFlowClient {
 }
 
 module.exports = {
+  DEFAULT_MODELS,
   SiliconFlowClient
 };

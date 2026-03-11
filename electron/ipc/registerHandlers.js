@@ -29,6 +29,10 @@ function registerHandlers({
     return siliconFlowClient.testConnection(payload || {});
   });
 
+  ipcMain.handle('siliconflow:getModels', async (_event, payload) => {
+    return siliconFlowClient.getAvailableModels(payload || {});
+  });
+
   ipcMain.handle('siliconflow:buildGreetingDraft', (_event, payload) => {
     return siliconFlowClient.buildGreetingDraft(payload || {});
   });

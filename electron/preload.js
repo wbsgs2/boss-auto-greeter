@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld('desktopApi', {
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (payload) => ipcRenderer.invoke('config:save', payload),
+  getSiliconFlowModels: (payload) => ipcRenderer.invoke('siliconflow:getModels', payload),
   testSiliconFlowConnection: (payload) => ipcRenderer.invoke('siliconflow:testConnection', payload),
   buildGreetingDraft: (payload) => ipcRenderer.invoke('siliconflow:buildGreetingDraft', payload),
   getMcpBossStatus: () => ipcRenderer.invoke('mcpBoss:getStatus'),
