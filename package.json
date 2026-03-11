@@ -1,0 +1,23 @@
+{
+  "name": "boss-auto-greeter",
+  "version": "0.1.0",
+  "description": "Windows-first local Electron app skeleton for BOSS Auto Greeter",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "check": "node scripts/check-syntax.js",
+    "check:core": "node --check electron/main.js && node --check electron/preload.js && node --check src/renderer/app.js",
+    "build": "node -e \"console.error('Build packaging is not configured yet; no build artifact will be produced. Use npm run dev for local run.'); process.exit(1)\""
+  },
+  "keywords": [
+    "electron",
+    "boss",
+    "siliconflow"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.7.7"
+  }
+}
