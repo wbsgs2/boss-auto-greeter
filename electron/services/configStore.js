@@ -45,6 +45,7 @@ const DEFAULT_CONFIG = {
   },
   mcpBoss: {
     remoteUrl: 'http://127.0.0.1:8000/mcp',
+    path: '',
     command: '',
     args: [],
     cwd: ''
@@ -198,6 +199,9 @@ class ConfigStore {
       next.mcpBoss = {};
       if (Object.prototype.hasOwnProperty.call(payload.mcpBoss, 'remoteUrl')) {
         next.mcpBoss.remoteUrl = payload.mcpBoss.remoteUrl;
+      }
+      if (Object.prototype.hasOwnProperty.call(payload.mcpBoss, 'path')) {
+        next.mcpBoss.path = payload.mcpBoss.path;
       }
       if (Object.prototype.hasOwnProperty.call(payload.mcpBoss, 'command')) {
         next.mcpBoss.command = payload.mcpBoss.command;
@@ -368,6 +372,7 @@ class ConfigStore {
       },
       mcpBoss: {
         remoteUrl: this.toSafeText(mcpBoss.remoteUrl, DEFAULT_CONFIG.mcpBoss.remoteUrl, 512),
+        path: this.toOptionalText(mcpBoss.path ?? mcpBoss.cwd, 512),
         command: this.toOptionalText(mcpBoss.command, 512),
         args: this.toStringArray(mcpBoss.args, 256, 50),
         cwd: this.toOptionalText(mcpBoss.cwd, 512)

@@ -42,11 +42,16 @@
                 API Key
                 <input id="api-key" type="password" placeholder="请输入你的 API Key" autocomplete="off" />
               </label>
+              <label>
+                mcp-boss 路径
+                <input id="mcp-path" type="text" placeholder="请输入包含 mcp_boss.py 的文件夹路径" />
+              </label>
               <div class="button-row">
                 <button type="submit">保存</button>
               </div>
               <p id="ai-status" class="status">保存后会自动使用默认设置。</p>
               <p id="api-key-mask" class="helper-text">当前还没有保存 API Key。</p>
+              <p id="mcp-path-text" class="helper-text">首次使用前，请先填写本地服务路径。</p>
             </form>
           </div>
         </section>
@@ -73,7 +78,7 @@
             <section class="panel-card login-card">
               <div id="login-phase-badge" class="status-badge">未登录</div>
               <p id="login-status-text" class="login-status-text">准备就绪，随时可以开始登录。</p>
-              <p class="helper-text">如果二维码失效，重新点击“开始登录”即可刷新。</p>
+              <p class="helper-text">点击“开始登录”时，会自动检查并启动本地服务。</p>
               <div class="button-row">
                 <button id="login-start-btn" type="button">开始登录</button>
                 <button id="login-refresh-btn" class="secondary" type="button">刷新状态</button>

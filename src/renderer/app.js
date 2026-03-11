@@ -9,8 +9,10 @@ const elements = {
 
   aiConfigForm: document.querySelector('#ai-config-form'),
   apiKey: document.querySelector('#api-key'),
+  mcpPath: document.querySelector('#mcp-path'),
   aiStatus: document.querySelector('#ai-status'),
   apiKeyMask: document.querySelector('#api-key-mask'),
+  mcpPathText: document.querySelector('#mcp-path-text'),
 
   loginStartBtn: document.querySelector('#login-start-btn'),
   loginRefreshBtn: document.querySelector('#login-refresh-btn'),
@@ -94,17 +96,23 @@ function applyConfig(config) {
   const ai = config?.ai || {};
   const jobSearch = config?.jobSearch || {};
   const preferences = config?.preferences || {};
+  const mcpBoss = config?.mcpBoss || {};
 
   elements.searchKeyword.value = jobSearch.keyword ?? preferences.keyword ?? '';
   elements.searchCity.value = jobSearch.city ?? preferences.city ?? '';
   elements.searchSalary.value = jobSearch.salaryRange || '';
   elements.searchExperience.value = jobSearch.experience || '';
   elements.searchEducation.value = jobSearch.education || '';
+  elements.mcpPath.value = mcpBoss.path || '';
 
   const masked = ai.apiKeyMasked || '';
   elements.apiKeyMask.textContent = masked
     ? `当前已保存：${masked}`
     : '当前还没有保存 API Key。';
+
+  elements.mcpPathText.textContent = mcpBoss.path
+    ? `当前路径：${mcpBoss.path}`
+    : '首次使用前，请先填写本地服务路径。';
 }
 
 function normalizeQrSrc(value) {
@@ -197,6 +205,35 @@ function renderLoginUnavailable() {
   elements.loginQrPlaceholder.textContent = '二维码暂时不可用';
 }
 
+function applyManagerStatus(status) {
+  const phase = String(status?.phase || '');
+  const message = String(status?.message || '').trim();
+
+  if (!message) {
+    return;
+  }
+
+  if (phase === 'starting') {
+    elements.loginPhaseBadge.textContent = '启动中';
+    elements.loginPhaseBadge.className = 'status-badge waiting';
+    elements.loginStatusText.textContent = message;
+    return;
+  }
+
+  if (phase === 'not-configured') {
+    elements.loginPhaseBadge.textContent = '需要配置';
+    elements.loginPhaseBadge.className = 'status-badge error';
+    elements.loginStatusText.textContent = message;
+    return;
+  }
+
+  if (phase === 'error') {
+    elements.loginPhaseBadge.textContent = '稍后重试';
+    elements.loginPhaseBadge.className = 'status-badge error';
+    elements.loginStatusText.textContent = message;
+  }
+}
+
 function pickJobValue(job, keys, fallback = '') {
   for (const key of keys) {
     const value = job?.[key];
@@ -261,17 +298,28 @@ async function saveAIConfig(event) {
   event.preventDefault();
 
   const apiKey = elements.apiKey.value.trim();
-  if (!apiKey) {
-    setStatus(elements.aiStatus, '请输入 API Key。', 'error');
+  const mcpPath = elements.mcpPath.value.trim();
+
+  if (!apiKey && !mcpPath) {
+    setStatus(elements.aiStatus, '请至少填写 API Key 或 mcp-boss 路径。', 'error');
     return;
   }
 
+  const payload = {};
+  if (apiKey) {
+    payload.ai = {
+      apiKey
+    };
+  }
+
+  if (mcpPath) {
+    payload.mcpBoss = {
+      path: mcpPath
+    };
+  }
+
   try {
-    const saved = await window.desktopApi.saveConfig({
-      ai: {
-        apiKey
-      }
-    });
+    const saved = await window.desktopApi.saveConfig(payload);
 
     applyConfig(saved);
     elements.apiKey.value = '';
@@ -289,6 +337,13 @@ async function refreshLoginStatus({ silent = false } = {}) {
 
   try {
     const result = await window.desktopApi.getMcpBossLoginStatus();
+    if (result?.ok === false && result?.message) {
+      applyManagerStatus({
+        phase: result.phase,
+        message: result.message
+      });
+      return;
+    }
     renderLoginState(result || {});
   } catch (error) {
     reportError('refreshLoginStatus', error);
@@ -308,7 +363,15 @@ async function startLogin() {
     renderLoginState(result || {});
   } catch (error) {
     reportError('startLogin', error);
-    renderLoginUnavailable();
+    const message = error?.message || '暂时无法获取二维码，请稍后再试。';
+    applyManagerStatus({
+      phase: message.includes('配置') ? 'not-configured' : 'error',
+      message
+    });
+    elements.loginQrImage.hidden = true;
+    elements.loginQrImage.removeAttribute('src');
+    elements.loginQrPlaceholder.hidden = false;
+    elements.loginQrPlaceholder.textContent = '二维码暂时不可用';
   }
 }
 
@@ -336,7 +399,7 @@ async function runSearch(event) {
     reportError('runSearch', error);
     elements.searchMeta.textContent = '暂时无法完成搜索。';
     elements.searchResults.innerHTML = '<div class="empty-state">搜索失败，请稍后再试。</div>';
-    setStatus(elements.searchStatus, '搜索失败，请稍后重试。', 'error');
+    setStatus(elements.searchStatus, error?.message || '搜索失败，请稍后重试。', 'error');
   }
 }
 
@@ -349,6 +412,12 @@ function bindEvents() {
   elements.loginStartBtn.addEventListener('click', startLogin);
   elements.loginRefreshBtn.addEventListener('click', () => refreshLoginStatus());
   elements.searchForm.addEventListener('submit', runSearch);
+
+  if (typeof window.desktopApi.onMcpBossStatus === 'function') {
+    window.desktopApi.onMcpBossStatus((status) => {
+      applyManagerStatus(status);
+    });
+  }
 }
 
 async function init() {

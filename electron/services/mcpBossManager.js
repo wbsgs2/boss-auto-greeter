@@ -7,10 +7,14 @@ class McpBossManager extends EventEmitter {
     this.child = null;
     this.remoteUrl = 'http://127.0.0.1:8000/mcp';
     this.requestTimeoutMs = 30 * 1000;
+    this.healthcheckTimeoutMs = 3 * 1000;
+    this.startupWaitMs = 15 * 1000;
+    this.servicePath = '';
+    this.startingPromise = null;
     this.requestId = 0;
     this.status = {
       phase: 'stopped',
-      message: 'mcp-boss not started',
+      message: '服务尚未启动',
       pid: null,
       startedAt: null,
       commandSummary: ''
@@ -24,11 +28,8 @@ class McpBossManager extends EventEmitter {
 
   configure(config = {}) {
     const remoteUrl = String(config.remoteUrl || '').trim();
-    this.lastConfig = {
-      command: String(config.command || '').trim(),
-      args: Array.isArray(config.args) ? config.args.map((item) => String(item)) : [],
-      cwd: String(config.cwd || '').trim()
-    };
+    this.servicePath = String(config.path ?? config.cwd ?? '').trim();
+    this.lastConfig = this.buildLaunchConfig(config);
     this.remoteUrl = remoteUrl || 'http://127.0.0.1:8000/mcp';
     this.updateStatus({
       ...this.status,
@@ -36,9 +37,25 @@ class McpBossManager extends EventEmitter {
     });
   }
 
+  buildLaunchConfig(config = {}) {
+    if (this.servicePath) {
+      return {
+        command: 'python',
+        args: ['mcp_boss.py'],
+        cwd: this.servicePath
+      };
+    }
+
+    return {
+      command: String(config.command || '').trim(),
+      args: Array.isArray(config.args) ? config.args.map((item) => String(item)) : [],
+      cwd: String(config.cwd || '').trim()
+    };
+  }
+
   describeCommand(config) {
     if (!config.command) {
-      return '未配置 mcp-boss 命令';
+      return '未配置本地服务路径';
     }
 
     return [config.command, ...config.args].join(' ');
@@ -59,7 +76,7 @@ class McpBossManager extends EventEmitter {
     if (!this.lastConfig.command) {
       this.updateStatus({
         phase: 'not-configured',
-        message: '请先在 BOSS 登录页配置 mcp-boss 启动命令',
+        message: '请先在 AI 配置中填写 mcp-boss 路径',
         pid: null,
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
@@ -69,7 +86,7 @@ class McpBossManager extends EventEmitter {
 
     this.updateStatus({
       phase: 'starting',
-      message: 'mcp-boss starting...',
+      message: 'mcp-boss 服务启动中，请稍后重试',
       pid: null,
       startedAt: null,
       commandSummary: this.describeCommand(this.lastConfig)
@@ -86,7 +103,7 @@ class McpBossManager extends EventEmitter {
       this.bindProcessEvents(this.child);
       this.updateStatus({
         phase: 'running',
-        message: 'mcp-boss is running',
+        message: '本地服务已启动，正在等待连接',
         pid: this.child.pid || null,
         startedAt: new Date().toISOString(),
         commandSummary: this.describeCommand(this.lastConfig)
@@ -95,7 +112,7 @@ class McpBossManager extends EventEmitter {
       this.child = null;
       this.updateStatus({
         phase: 'error',
-        message: `mcp-boss start failed: ${error.message}`,
+        message: `启动失败：${error.message}`,
         pid: null,
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
@@ -130,7 +147,7 @@ class McpBossManager extends EventEmitter {
       }
       this.updateStatus({
         phase: 'error',
-        message: `mcp-boss process error: ${error.message}`,
+        message: `服务进程异常：${error.message}`,
         pid: null,
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
@@ -143,8 +160,8 @@ class McpBossManager extends EventEmitter {
         return;
       }
       const message = signal
-        ? `mcp-boss exited by signal: ${signal}`
-        : `mcp-boss exited with code: ${code}`;
+        ? `服务已停止（signal=${signal}）`
+        : `服务已停止（code=${code}）`;
       this.updateStatus({
         phase: 'stopped',
         message,
@@ -160,7 +177,7 @@ class McpBossManager extends EventEmitter {
     if (!this.child) {
       this.updateStatus({
         phase: 'stopped',
-        message: 'mcp-boss is already stopped',
+        message: '服务已停止',
         pid: null,
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
@@ -172,7 +189,7 @@ class McpBossManager extends EventEmitter {
 
     this.updateStatus({
       phase: 'stopping',
-      message: 'mcp-boss stopping...',
+      message: '正在停止服务...',
       pid: child.pid || null,
       startedAt: this.status.startedAt,
       commandSummary: this.describeCommand(this.lastConfig)
@@ -188,7 +205,7 @@ class McpBossManager extends EventEmitter {
     } catch (error) {
       this.updateStatus({
         phase: 'error',
-        message: `mcp-boss stop failed: ${error.message}`,
+        message: `停止失败：${error.message}`,
         pid: child.pid || null,
         startedAt: this.status.startedAt,
         commandSummary: this.describeCommand(this.lastConfig)
@@ -216,6 +233,17 @@ class McpBossManager extends EventEmitter {
   }
 
   async getLoginStatus() {
+    const available = await this.ensureServiceAvailable({ autoStart: false });
+    if (!available.ok) {
+      return {
+        ok: false,
+        implemented: true,
+        phase: available.phase || 'not-ready',
+        message: available.message,
+        managerStatus: this.getStatus()
+      };
+    }
+
     const payload = await this.callRemoteMethod('get_login_info');
     const phase = this.inferLoginPhase(payload, 'unknown');
     const message = this.pickText(
@@ -234,6 +262,7 @@ class McpBossManager extends EventEmitter {
   }
 
   async requestLoginQr() {
+    await this.assertServiceAvailable({ autoStart: true });
     const payload = await this.callRemoteMethod('login_full_auto');
     const phase = this.inferLoginPhase(payload, 'submitted');
     const message = this.pickText(
@@ -268,6 +297,7 @@ class McpBossManager extends EventEmitter {
   }
 
   async searchJobs(params = {}) {
+    await this.assertServiceAvailable({ autoStart: true });
     const query = this.normalizeSearchParams(params);
     const payload = await this.callRemoteMethod('search_jobs', query);
     const jobs = this.extractJobs(payload);
@@ -299,6 +329,156 @@ class McpBossManager extends EventEmitter {
       pageSize: this.toBoundedInteger(input.pageSize, 1, 100, 20),
       sortBy: String(input.sortBy || 'default').trim() || 'default'
     };
+  }
+
+  async ensureServiceAvailable({ autoStart = true } = {}) {
+    if (await this.isRemoteAccessible()) {
+      if (this.status.phase === 'starting' || this.status.phase === 'running') {
+        this.updateStatus({
+          phase: 'running',
+          message: '本地服务已就绪',
+          pid: this.child?.pid || this.status.pid || null,
+          startedAt: this.status.startedAt,
+          commandSummary: this.describeCommand(this.lastConfig)
+        });
+      }
+
+      return {
+        ok: true,
+        phase: 'ready',
+        message: '本地服务已就绪'
+      };
+    }
+
+    if (!autoStart) {
+      return this.buildUnavailableResult();
+    }
+
+    if (!this.lastConfig.command || !this.lastConfig.cwd) {
+      const result = this.buildUnavailableResult();
+      this.updateStatus({
+        phase: 'not-configured',
+        message: result.message,
+        pid: null,
+        startedAt: null,
+        commandSummary: this.describeCommand(this.lastConfig)
+      });
+      return result;
+    }
+
+    if (!this.startingPromise) {
+      this.startingPromise = this.startAndWaitUntilAccessible();
+      this.startingPromise.finally(() => {
+        this.startingPromise = null;
+      });
+    }
+
+    try {
+      await this.startingPromise;
+      return {
+        ok: true,
+        phase: 'ready',
+        message: '本地服务已就绪'
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        phase: 'starting',
+        message: error.message || 'mcp-boss 服务启动中，请稍后重试'
+      };
+    }
+  }
+
+  async assertServiceAvailable(options = {}) {
+    const result = await this.ensureServiceAvailable(options);
+    if (!result.ok) {
+      throw new Error(result.message);
+    }
+  }
+
+  buildUnavailableResult() {
+    if (!this.lastConfig.command || !this.lastConfig.cwd) {
+      return {
+        ok: false,
+        phase: 'not-configured',
+        message: '请先在 AI 配置中填写 mcp-boss 路径'
+      };
+    }
+
+    if (this.status.phase === 'starting') {
+      return {
+        ok: false,
+        phase: 'starting',
+        message: 'mcp-boss 服务启动中，请稍后重试'
+      };
+    }
+
+    return {
+      ok: false,
+      phase: 'not-running',
+      message: '本地服务暂时不可用，请稍后重试'
+    };
+  }
+
+  async startAndWaitUntilAccessible() {
+    const current = this.start();
+    if (current.phase === 'not-configured' || current.phase === 'error') {
+      throw new Error(current.message);
+    }
+
+    if (await this.waitForRemoteAccessible(this.startupWaitMs)) {
+      this.updateStatus({
+        phase: 'running',
+        message: '本地服务已就绪',
+        pid: this.child?.pid || current.pid || null,
+        startedAt: this.status.startedAt || current.startedAt || new Date().toISOString(),
+        commandSummary: this.describeCommand(this.lastConfig)
+      });
+      return true;
+    }
+
+    if (this.status.phase === 'error' || this.status.phase === 'stopped') {
+      throw new Error(this.status.message || '本地服务启动失败，请检查 mcp-boss 路径');
+    }
+
+    throw new Error('mcp-boss 服务启动中，请稍后重试');
+  }
+
+  async waitForRemoteAccessible(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      if (await this.isRemoteAccessible()) {
+        return true;
+      }
+
+      if (!this.child && this.status.phase !== 'starting' && this.status.phase !== 'running') {
+        return false;
+      }
+
+      await this.sleep(500);
+    }
+
+    return false;
+  }
+
+  async isRemoteAccessible() {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, this.healthcheckTimeoutMs);
+
+    try {
+      const response = await fetch(this.remoteUrl, {
+        method: 'GET',
+        signal: controller.signal
+      });
+      return Boolean(response);
+    } catch (_error) {
+      return false;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   async callRemoteMethod(name, params = {}) {
@@ -597,6 +777,12 @@ class McpBossManager extends EventEmitter {
   nextRequestId() {
     this.requestId += 1;
     return `boss-auto-greeter-${this.requestId}`;
+  }
+
+  sleep(ms) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
   }
 
   pickText(candidates, fallback) {

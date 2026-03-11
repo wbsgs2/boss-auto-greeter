@@ -59,6 +59,10 @@ async function bootstrap() {
 
   createMainWindow();
 
+  mcpBossManager.ensureServiceAvailable({ autoStart: true }).catch((error) => {
+    console.warn('[main] auto start mcp-boss skipped:', error?.message || error);
+  });
+
   app.on('before-quit', () => {
     mcpBossManager.stop();
   });
