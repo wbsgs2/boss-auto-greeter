@@ -1,10 +1,8 @@
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
 
-const INSTALL_URL = 'https://github.com/mucsbr/mcp-bosszp';
 const SCRIPT_CANDIDATES = ['mcp_boss.py', 'boss_zhipin_fastmcp_v2.py'];
 
 class McpBossManager extends EventEmitter {
@@ -17,7 +15,6 @@ class McpBossManager extends EventEmitter {
     this.startupWaitMs = 15 * 1000;
     this.servicePath = '';
     this.serviceScript = '';
-    this.defaultInstallDir = path.join(os.homedir(), 'mcp-bosszp');
     this.startingPromise = null;
     this.requestId = 0;
     this.status = {
@@ -71,6 +68,15 @@ class McpBossManager extends EventEmitter {
     return [config.command, ...config.args].join(' ');
   }
 
+  buildMissingServiceMessage(config = {}) {
+    const candidates = this.resolveCandidateDirs(config);
+    const searched = candidates.length > 0
+      ? `已搜索目录：${candidates.join(' | ')}`
+      : '未找到可搜索目录';
+
+    return `当前安装包未包含登录服务，请重新安装应用。${searched}`;
+  }
+
   getStatus() {
     return {
       ...this.status,
@@ -88,7 +94,7 @@ class McpBossManager extends EventEmitter {
     if (!this.lastConfig.command) {
       this.updateStatus({
         phase: 'not-installed',
-        message: `请先安装 mcp-boss：${INSTALL_URL}`,
+        message: this.buildMissingServiceMessage(this.lastConfig),
         pid: null,
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
@@ -403,7 +409,7 @@ class McpBossManager extends EventEmitter {
       return {
         ok: false,
         phase: 'not-installed',
-        message: `请先安装 mcp-boss：${INSTALL_URL}`
+        message: this.buildMissingServiceMessage(this.lastConfig)
       };
     }
 
@@ -427,12 +433,7 @@ class McpBossManager extends EventEmitter {
       this.lastConfig = this.buildLaunchConfig(this.lastConfig);
 
       if (!this.lastConfig.command || !this.lastConfig.cwd) {
-        await this.installService();
-        this.lastConfig = this.buildLaunchConfig(this.lastConfig);
-      }
-
-      if (!this.lastConfig.command || !this.lastConfig.cwd) {
-        throw new Error(`请先安装 mcp-boss：${INSTALL_URL}`);
+        throw new Error(this.buildMissingServiceMessage(this.lastConfig));
       }
 
       return this.startAndWaitUntilAccessible();
@@ -446,68 +447,6 @@ class McpBossManager extends EventEmitter {
       });
       throw error;
     }
-  }
-
-  async installService() {
-    const installDir = this.defaultInstallDir;
-    const repoExists = fs.existsSync(path.join(installDir, '.git'));
-
-    if (!fs.existsSync(installDir)) {
-      this.updateStatus({
-        phase: 'installing',
-        message: '正在下载 mcp-boss...',
-        pid: null,
-        startedAt: null,
-        commandSummary: ''
-      });
-
-      await this.runCommand('git', ['clone', INSTALL_URL, installDir], {
-        cwd: os.homedir(),
-        label: '下载 mcp-boss'
-      });
-    } else if (repoExists) {
-      this.updateStatus({
-        phase: 'installing',
-        message: '正在更新 mcp-boss...',
-        pid: null,
-        startedAt: null,
-        commandSummary: ''
-      });
-
-      await this.runCommand('git', ['-C', installDir, 'pull'], {
-        cwd: installDir,
-        label: '更新 mcp-boss'
-      });
-    }
-
-    this.updateStatus({
-      phase: 'installing',
-      message: '正在安装依赖...',
-      pid: null,
-      startedAt: null,
-      commandSummary: ''
-    });
-
-    await this.runCommand('python', ['-m', 'pip', 'install', '-r', 'requirements.txt'], {
-      cwd: installDir,
-      label: '安装依赖'
-    });
-
-    this.updateStatus({
-      phase: 'installing',
-      message: '正在安装浏览器依赖...',
-      pid: null,
-      startedAt: null,
-      commandSummary: ''
-    });
-
-    await this.runCommand('python', ['-m', 'playwright', 'install', 'chromium'], {
-      cwd: installDir,
-      label: '安装浏览器依赖'
-    });
-
-    this.servicePath = installDir;
-    this.serviceScript = this.findScriptInDir(installDir);
   }
 
   async startAndWaitUntilAccessible() {
@@ -571,47 +510,6 @@ class McpBossManager extends EventEmitter {
     }
   }
 
-  runCommand(command, args, { cwd, label }) {
-    return new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
-        cwd,
-        shell: process.platform === 'win32',
-        env: process.env
-      });
-
-      child.stdout?.on('data', (chunk) => {
-        this.emit('log', {
-          level: 'info',
-          source: 'mcp-boss-installer',
-          time: new Date().toISOString(),
-          message: chunk.toString().trim()
-        });
-      });
-
-      child.stderr?.on('data', (chunk) => {
-        this.emit('log', {
-          level: 'error',
-          source: 'mcp-boss-installer',
-          time: new Date().toISOString(),
-          message: chunk.toString().trim()
-        });
-      });
-
-      child.on('error', (error) => {
-        reject(new Error(`${label}失败：${error.message}`));
-      });
-
-      child.on('exit', (code) => {
-        if (code === 0) {
-          resolve();
-          return;
-        }
-
-        reject(new Error(`${label}失败（code=${code}）`));
-      });
-    });
-  }
-
   detectInstalledService(config = {}) {
     const candidates = this.resolveCandidateDirs(config);
 
@@ -644,14 +542,12 @@ class McpBossManager extends EventEmitter {
     pushValue(config.path);
     pushValue(config.cwd);
     pushValue(process.env.MCP_BOSS_PATH);
-    pushValue(path.join(process.cwd(), 'mcp-bosszp'));
-    pushValue(path.join(process.cwd(), 'mcp-boss'));
-    pushValue(path.join(os.homedir(), 'mcp-bosszp'));
-    pushValue(path.join(os.homedir(), 'mcp-boss'));
-    pushValue(path.join(os.homedir(), 'projects', 'mcp-bosszp'));
-    pushValue(path.join(os.homedir(), 'projects', 'mcp-boss'));
-    pushValue(path.join(os.homedir(), 'workspace', 'mcp-bosszp'));
-    pushValue(path.join(os.homedir(), 'workspace', 'mcp-boss'));
+    pushValue(path.resolve(process.cwd(), 'resources', 'mcp-boss'));
+    pushValue(path.resolve(process.cwd(), 'resources', 'mcp-bosszp'));
+    pushValue(path.resolve(process.resourcesPath || '', 'mcp-boss'));
+    pushValue(path.resolve(process.resourcesPath || '', 'mcp-bosszp'));
+    pushValue(path.resolve(process.resourcesPath || '', 'resources', 'mcp-boss'));
+    pushValue(path.resolve(process.resourcesPath || '', 'resources', 'mcp-bosszp'));
 
     return Array.from(values);
   }

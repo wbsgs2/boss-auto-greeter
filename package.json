@@ -8,7 +8,29 @@
     "start": "electron .",
     "check": "node scripts/check-syntax.js",
     "check:core": "node --check electron/main.js && node --check electron/preload.js && node --check src/renderer/app.js",
-    "build": "node -e \"console.error('Build packaging is not configured yet; no build artifact will be produced. Use npm run dev for local run.'); process.exit(1)\""
+    "build": "electron-builder --win"
+  },
+  "build": {
+    "appId": "com.openclaw.bossautogreeter",
+    "productName": "BOSS 求职助手",
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/mcp-boss",
+        "to": "mcp-boss",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    }
   },
   "keywords": [
     "electron",
@@ -18,6 +40,7 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^31.7.7"
+    "electron": "^31.7.7",
+    "electron-builder": "^25.1.8"
   }
 }

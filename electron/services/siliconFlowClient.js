@@ -5,9 +5,49 @@ const DEFAULT_MODELS = Object.freeze([
   'deepseek-ai/DeepSeek-V2.5'
 ]);
 
+const NON_TEXT_MODEL_PATTERNS = [
+  /embedding/i,
+  /rerank/i,
+  /tts/i,
+  /asr/i,
+  /stt/i,
+  /speech/i,
+  /voice/i,
+  /audio/i,
+  /image/i,
+  /vision/i,
+  /(^|[-/])vl([-/]|$)/i,
+  /video/i,
+  /flux/i,
+  /sdxl/i,
+  /whisper/i,
+  /ocr/i,
+  /reward/i,
+  /moderation/i
+];
+
 class SiliconFlowClient {
   constructor(configStore) {
     this.configStore = configStore;
+  }
+
+  filterAndSortModels(models = []) {
+    const unique = Array.from(new Set(
+      models
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    ));
+
+    const filtered = unique.filter((model) => {
+      return !NON_TEXT_MODEL_PATTERNS.some((pattern) => pattern.test(model));
+    });
+
+    return filtered.sort((left, right) => {
+      return left.localeCompare(right, 'en', {
+        numeric: true,
+        sensitivity: 'base'
+      });
+    });
   }
 
   async getAvailableModels(payload = {}) {
@@ -40,11 +80,11 @@ class SiliconFlowClient {
       });
 
       const data = await response.json().catch(() => ({}));
-      const models = Array.isArray(data?.data)
+      const models = this.filterAndSortModels(Array.isArray(data?.data)
         ? data.data
           .map((item) => String(item?.id || '').trim())
           .filter(Boolean)
-        : [];
+        : []);
 
       if (!response.ok || models.length === 0) {
         return {
