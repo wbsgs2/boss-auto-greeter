@@ -371,10 +371,6 @@ async function saveAIConfigSilently() {
     const refreshed = await window.desktopApi.getConfig();
     applyConfig(refreshed);
     await loadAvailableModels();
-
-    if (elements.apiKey.value.trim()) {
-      elements.apiKey.value = '';
-    }
   } catch (error) {
     reportError('saveAIConfigSilently', error);
   }
