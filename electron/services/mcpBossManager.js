@@ -271,8 +271,10 @@ class McpBossManager extends EventEmitter {
   }
 
   async getLoginStatus() {
+    console.log('[mcp-boss] getLoginStatus called');
     const available = await this.ensureServiceAvailable({ autoStart: false });
     if (!available.ok) {
+      console.log('[mcp-boss] getLoginStatus: service not available');
       return {
         ok: false,
         implemented: true,
@@ -282,18 +284,26 @@ class McpBossManager extends EventEmitter {
       };
     }
 
-    const payload = await this.callRemoteMethod('get_login_info');
-    const phase = this.inferLoginPhase(payload, 'unknown');
+    console.log('[mcp-boss] getLoginStatus: calling get_login_info_tool');
+    const payload = await this.callRemoteMethod('get_login_info_tool');
+    console.log('[mcp-boss] getLoginStatus payload:', JSON.stringify(payload, null, 2));
+
+    const isLoggedIn = payload.is_logged_in || payload.isLoggedIn || false;
+    const phase = isLoggedIn ? 'logged-in' : this.inferLoginPhase(payload, 'unknown');
     const message = this.pickText(
       [payload.message, payload.detail, payload.summary],
       '已调用 get_login_info()'
     );
 
+    console.log('[mcp-boss] getLoginStatus result: isLoggedIn=', isLoggedIn, 'phase=', phase);
+
     return {
       ok: this.isRemoteSuccess(payload),
       implemented: true,
+      isLoggedIn,
       phase,
       message,
+      qrImageBase64: payload.image_url || payload.imageUrl || payload.qrImageBase64 || '',
       managerStatus: this.getStatus(),
       raw: payload
     };
@@ -301,37 +311,70 @@ class McpBossManager extends EventEmitter {
 
   async requestLoginQr() {
     await this.assertServiceAvailable({ autoStart: true });
+    console.log('[mcp-boss] calling login_full_auto...');
     const payload = await this.callRemoteMethod('login_full_auto');
-    const phase = this.inferLoginPhase(payload, 'submitted');
+    console.log('[mcp-boss] login_full_auto raw payload type:', typeof payload);
+    console.log('[mcp-boss] login_full_auto raw payload:', JSON.stringify(payload, null, 2));
+
+    // 解析嵌套的 JSON 字符串
+    let data = payload;
+
+    // 如果 payload 是字符串，解析它
+    if (typeof payload === 'string') {
+      const parsed = this.safeJsonParse(payload);
+      if (parsed !== null) {
+        data = parsed;
+        console.log('[mcp-boss] payload was string, parsed to:', JSON.stringify(data, null, 2));
+      }
+    }
+
+    // 如果 payload 有 result 字段且是字符串，解析它
+    if (data && typeof data === 'object' && data.result && typeof data.result === 'string') {
+      const parsed = this.safeJsonParse(data.result);
+      if (parsed !== null) {
+        data = parsed;
+        console.log('[mcp-boss] payload.result was string, parsed to:', JSON.stringify(data, null, 2));
+      }
+    }
+
+    const phase = this.inferLoginPhase(data, 'submitted');
     const message = this.pickText(
-      [payload.message, payload.detail, payload.summary],
+      [data.message, data.detail, data.summary],
       '已调用 login_full_auto()'
     );
 
-    return {
-      ok: this.isRemoteSuccess(payload),
+    const qrImageBase64 = this.pickText(
+      [
+        data.qrImageBase64,
+        data.qrCodeBase64,
+        data.qrcodeBase64,
+        data.qr_code_base64,
+        data.qr_code,
+        data.qrcode,
+        data.qrBase64,
+        data.image_url,
+        data.imageUrl
+      ],
+      ''
+    );
+
+    console.log('[mcp-boss] final qrImageBase64:', qrImageBase64);
+
+    const result = {
+      ok: this.isRemoteSuccess(data),
       implemented: true,
       phase,
-      qrImageBase64: this.pickText(
-        [
-          payload.qrImageBase64,
-          payload.qrCodeBase64,
-          payload.qrcodeBase64,
-          payload.qr_code_base64,
-          payload.qr_code,
-          payload.qrcode,
-          payload.qrBase64
-        ],
-        ''
-      ),
+      qrImageBase64,
       expiresInSec: this.pickNumber(
-        [payload.expiresInSec, payload.expireSec, payload.expires_in, payload.ttl],
+        [data.expiresInSec, data.expireSec, data.expires_in, data.ttl],
         0
       ),
       message,
       managerStatus: this.getStatus(),
-      raw: payload
+      raw: data
     };
+    console.log('[mcp-boss] requestLoginQr returning:', JSON.stringify(result, null, 2));
+    return result;
   }
 
   async searchJobs(params = {}) {
@@ -983,7 +1026,45 @@ class McpBossManager extends EventEmitter {
     this.servicePath = target;
   }
 
+  async ensureMcpSession() {
+    // 如果已经有 session ID，不需要初始化
+    if (this.mcpSessionId) {
+      return;
+    }
+
+    // 发送 initialize 请求来获取 session ID
+    const initPayload = {
+      jsonrpc: '2.0',
+      id: this.nextRequestId(),
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: {
+          name: 'boss-auto-greeter',
+          version: '1.0.0'
+        }
+      }
+    };
+
+    try {
+      const response = await this.postRemote(initPayload, 'initialize');
+      console.log('[mcp-boss] initialize response:', response);
+    } catch (error) {
+      // 即使初始化失败，也尝试从响应头获取 session ID
+      console.warn('[mcp-boss] initialize warning:', error.message);
+    }
+
+    // 如果服务器返回了 session ID，后续请求就可以使用了
+    if (this.mcpSessionId) {
+      console.log('[mcp-boss] session established:', this.mcpSessionId);
+    }
+  }
+
   async callRemoteMethod(name, params = {}) {
+    // 确保已初始化 MCP session
+    await this.ensureMcpSession();
+
     const toolPayload = {
       jsonrpc: '2.0',
       id: this.nextRequestId(),
@@ -1022,14 +1103,19 @@ class McpBossManager extends EventEmitter {
       controller.abort();
     }, this.requestTimeoutMs);
 
+    // 构建请求头，只有在有 session ID 时才添加
+    const headers = {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream'
+    };
+    if (sessionId) {
+      headers['Mcp-Session-Id'] = sessionId;
+    }
+
     try {
       response = await fetch(this.remoteUrl, {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          accept: 'application/json, text/event-stream',
-          'Mcp-Session-Id': sessionId
-        },
+        headers,
         body: JSON.stringify(body),
         signal: controller.signal
       });
@@ -1043,8 +1129,10 @@ class McpBossManager extends EventEmitter {
     }
 
     this.captureMcpSessionIdFromResponse(response);
+
+    // 处理 SSE 流式响应
     const text = await response.text();
-    const json = this.safeJsonParse(text);
+    const json = this.parseMcpResponse(text, methodName);
 
     if (!response.ok) {
       const detail = this.extractErrorText(json) || text || `HTTP ${response.status}`;
@@ -1059,19 +1147,14 @@ class McpBossManager extends EventEmitter {
   }
 
   getOrCreateMcpSessionId() {
-    if (!this.mcpSessionId) {
-      this.mcpSessionId = this.generateMcpSessionId();
-    }
-
-    return this.mcpSessionId;
+    // 首次请求不发送 session ID，让服务器创建
+    // 后续请求使用服务器返回的 session ID
+    return this.mcpSessionId || '';
   }
 
   generateMcpSessionId() {
-    try {
-      return randomUUID();
-    } catch (_error) {
-      return `boss-auto-greeter-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    }
+    // 不再客户端生成 session ID
+    return '';
   }
 
   captureMcpSessionIdFromResponse(response) {
@@ -1112,13 +1195,30 @@ class McpBossManager extends EventEmitter {
   }
 
   extractResponseData(payload, methodName) {
-    const base = payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'result')
+    let base = payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'result')
       ? payload.result
       : payload;
 
+    // 如果 base 是字符串，尝试解析为 JSON
+    if (typeof base === 'string') {
+      const parsed = this.safeJsonParse(base);
+      if (parsed !== null) {
+        base = parsed;
+      }
+    }
+
     if (base && typeof base === 'object') {
+      // 优先处理 structuredContent，但需要进一步解析内部的 result 字符串
       if (base.structuredContent && typeof base.structuredContent === 'object') {
-        return base.structuredContent;
+        const sc = base.structuredContent;
+        // 如果 structuredContent.result 是字符串，解析它
+        if (sc.result && typeof sc.result === 'string') {
+          const parsed = this.safeJsonParse(sc.result);
+          if (parsed !== null) {
+            return parsed;
+          }
+        }
+        return sc;
       }
 
       if (base.data && typeof base.data === 'object') {
@@ -1210,8 +1310,11 @@ class McpBossManager extends EventEmitter {
       return 'not-logged-in';
     }
 
-    if (this.pickText(
+    // 优先检查 login_step 字段（后端实际返回的格式）
+    const loginStep = this.pickText(
       [
+        payload.login_step,
+        payload.loginStep,
         payload.phase,
         payload.status,
         payload.loginStatus,
@@ -1219,17 +1322,10 @@ class McpBossManager extends EventEmitter {
         payload.state
       ],
       ''
-    )) {
-      return this.pickText(
-        [
-          payload.phase,
-          payload.status,
-          payload.loginStatus,
-          payload.login_status,
-          payload.state
-        ],
-        fallback
-      );
+    );
+
+    if (loginStep) {
+      return loginStep;
     }
 
     const hasQr = Boolean(this.pickText(
@@ -1239,13 +1335,15 @@ class McpBossManager extends EventEmitter {
         payload.qrcodeBase64,
         payload.qr_code_base64,
         payload.qr_code,
-        payload.qrcode
+        payload.qrcode,
+        payload.image_url,
+        payload.imageUrl
       ],
       ''
     ));
 
     if (hasQr) {
-      return 'qr-ready';
+      return 'qr-generated';
     }
 
     return fallback;
@@ -1302,6 +1400,72 @@ class McpBossManager extends EventEmitter {
     } catch (_error) {
       return null;
     }
+  }
+
+  parseMcpResponse(text, methodName) {
+    if (typeof text !== 'string' || !text.trim()) {
+      return null;
+    }
+
+    // 首先尝试直接解析为 JSON
+    const directJson = this.safeJsonParse(text);
+    if (directJson !== null) {
+      return directJson;
+    }
+
+    // 尝试解析 SSE (Server-Sent Events) 格式
+    // SSE 格式示例:
+    // event: message
+    // data: {"jsonrpc":"2.0",...}
+    const lines = text.split('\n');
+    let lastDataContent = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('data:')) {
+        const dataContent = trimmed.slice(5).trim();
+        if (dataContent && dataContent !== '[done]') {
+          lastDataContent = dataContent;
+          const parsed = this.safeJsonParse(dataContent);
+          if (parsed !== null) {
+            // 优先返回有 result 的响应（初始化响应或成功调用）
+            if (parsed.result !== undefined) {
+              return parsed;
+            }
+          }
+        }
+      }
+    }
+
+    // 如果找到了 JSON 数据，返回最后一个
+    if (lastDataContent) {
+      const parsed = this.safeJsonParse(lastDataContent);
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+
+    // 尝试查找任何 JSON 对象
+    const jsonMatches = text.match(/\{[\s\S]*?\}/g);
+    if (jsonMatches) {
+      for (const match of jsonMatches) {
+        const parsed = this.safeJsonParse(match);
+        if (parsed !== null && (parsed.result !== undefined || parsed.error !== undefined)) {
+          return parsed;
+        }
+      }
+      // 如果没有找到带 result/error 的，返回第一个有效 JSON
+      for (const match of jsonMatches) {
+        const parsed = this.safeJsonParse(match);
+        if (parsed !== null) {
+          return parsed;
+        }
+      }
+    }
+
+    return null;
   }
 
   nextRequestId() {

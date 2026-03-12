@@ -1113,8 +1113,80 @@ async def login_start_interactive(ctx: Context) -> str:
 
 @mcp.tool()
 async def get_login_info_tool(ctx: Context) -> str:
-    """获取当前登录状态和Cookie信息的工具"""
+    """获取当前登录状态和Cookie信息的工具（主动检查状态）"""
     try:
+        login_status = state.login_status
+
+        # 如果有 qr_id 且未登录，主动检查 Boss API 状态
+        if login_status.qr_id and not login_status.is_logged_in:
+            qr_id = login_status.qr_id
+            session = state.get_session()
+
+            # 检查扫码状态
+            scan_url = f"https://www.zhipin.com/wapi/zppassport/qrcode/scan?uuid={qr_id}"
+            try:
+                scan_resp = session.get(scan_url, timeout=5)
+                if scan_resp.status_code == 200:
+                    scan_data = scan_resp.json()
+                    if scan_data.get("scaned"):
+                        # 用户已扫码，更新状态
+                        state.update_login_status(login_step="scanned")
+
+                        # 检查确认状态
+                        confirm_url = f"https://www.zhipin.com/wapi/zppassport/qrcode/scanLogin?qrId={qr_id}&status=1"
+                        confirm_resp = session.get(confirm_url, timeout=5)
+                        if confirm_resp.status_code == 200:
+                            # 用户已确认登录，获取Cookie
+                            import base64
+                            from Crypto.Cipher import AES
+                            from Crypto.Util.Padding import pad
+                            from Crypto.Random import get_random_bytes
+
+                            i_str = "8048b8676fb7d3d8952276e6e98e0bde.f2dc7a63c4b0fbfa4b51a07e2710cf83.fef7e750fc3a1e6327e8a880915aee9c.ae00f848beb1aa591d71d5a80dd3bd95"
+                            e_b64 = "clRwXUJBK1VKK0k0IWFbbQ=="
+
+                            key_bytes = base64.b64decode(e_b64)
+                            plaintext_bytes = i_str.encode('utf-8')
+                            iv_bytes = get_random_bytes(16)
+                            cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
+                            padded_plaintext = pad(plaintext_bytes, AES.block_size)
+                            ciphertext_bytes = cipher.encrypt(padded_plaintext)
+                            result_bytes = iv_bytes + ciphertext_bytes
+                            fp = base64.b64encode(result_bytes).decode('utf-8')
+
+                            dispatcher_url = f"https://www.zhipin.com/wapi/zppassport/qrcode/dispatcher?qrId={qr_id}&pk=header-login&fp={fp}"
+                            cookie_resp = session.get(dispatcher_url, allow_redirects=False)
+
+                            set_cookie_headers = cookie_resp.headers.get('Set-Cookie', '')
+                            cookie_str = ''
+                            bst_value = ''
+
+                            if set_cookie_headers:
+                                cookies = {}
+                                cookie_parts = set_cookie_headers.split(',')
+                                for part in cookie_parts:
+                                    if '=' in part:
+                                        name_value = part.strip().split(';')[0].strip()
+                                        if '=' in name_value:
+                                            name, value = name_value.split('=', 1)
+                                            cookies[name.strip()] = value.strip()
+
+                                cookie_str = '; '.join([f"{k}={v}" for k, v in cookies.items()])
+                                if 'bst' in cookies:
+                                    bst_value = cookies['bst']
+
+                            if cookie_str:
+                                state.update_login_status(
+                                    is_logged_in=True,
+                                    cookie=cookie_str,
+                                    bst=bst_value,
+                                    login_step="logged_in"
+                                )
+                                await ctx.info("✅ 登录成功！Cookie已保存")
+            except Exception as e:
+                await ctx.info(f"检查登录状态时出错: {str(e)}")
+
+        # 重新获取最新状态
         login_status = state.login_status
 
         # 构建响应信息
@@ -1213,6 +1285,118 @@ async def get_recommend_jobs_tool(
         return json.dumps({
             "error": "获取职位失败",
             "message": error_msg
+        }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def search_jobs(
+    ctx: Context,
+    keyword: str = "",
+    city: str = "",
+    salaryRange: str = "",
+    experience: str = "",
+    education: str = "",
+    page: int = 1,
+    pageSize: int = 20,
+    sortBy: str = "default"
+) -> str:
+    """搜索职位工具
+
+    参数说明：
+    - keyword: 搜索关键词，如职位名称或技能
+    - city: 城市名称
+    - salaryRange: 薪资范围，如 20-30K
+    - experience: 工作经验要求
+    - education: 学历要求
+    - page: 页码，从1开始
+    - pageSize: 每页数量
+    - sortBy: 排序方式
+    """
+    await ctx.info(f"搜索职位: 关键词={keyword}, 城市={city}, 页码={page}")
+
+    try:
+        if not state.login_status.is_logged_in:
+            return json.dumps({
+                "error": "未登录",
+                "message": "请先完成登录再搜索职位",
+                "jobs": [],
+                "total": 0
+            }, ensure_ascii=False, indent=2)
+
+        # 获取session并设置API请求头
+        session = state.get_session()
+        BossZhipinAPI.setup_api_headers(session, state.login_status.cookie, state.login_status.bst)
+
+        # 转换薪资范围格式
+        salary = salaryRange if salaryRange else "不限"
+
+        # 构造API参数 - 使用推荐职位接口
+        params = {
+            "page": page,
+            "experience": experience if experience else "不限",
+            "jobType": "全职",
+            "salary": salary
+        }
+
+        # 调用API获取职位
+        result = await BossZhipinAPI.get_job_list(session, params)
+
+        if result.get("status") == "success":
+            data = result.get("data", {})
+            raw_jobs = data.get("jobs", [])
+
+            # 转换为前端期望的格式
+            jobs = []
+            for job in raw_jobs:
+                jobs.append({
+                    "jobId": job.get("jobId", job.get("securityId", "")),
+                    "securityId": job.get("securityId", job.get("security_id", "")),
+                    "title": job.get("jobName", job.get("title", "未知职位")),
+                    "jobName": job.get("jobName", job.get("title", "未知职位")),
+                    "company": job.get("companyName", job.get("company", "未知公司")),
+                    "companyName": job.get("companyName", job.get("company", "未知公司")),
+                    "salary": job.get("salary", "面议"),
+                    "salaryRange": job.get("salary", job.get("salaryRange", "面议")),
+                    "city": job.get("city", city),
+                    "location": job.get("city", job.get("location", "")),
+                    "experience": job.get("experience", experience if experience else "不限"),
+                    "education": job.get("education", education if education else "不限")
+                })
+
+            await ctx.info(f"成功搜索到 {len(jobs)} 个职位")
+
+            return json.dumps({
+                "status": "success",
+                "jobs": jobs,
+                "total": data.get("total", len(jobs)),
+                "page": page,
+                "pageSize": pageSize,
+                "query": {
+                    "keyword": keyword,
+                    "city": city,
+                    "salaryRange": salaryRange,
+                    "experience": experience,
+                    "education": education
+                }
+            }, ensure_ascii=False, indent=2)
+        else:
+            error_msg = result.get("message", "搜索职位失败")
+            await ctx.error(f"搜索职位失败: {error_msg}")
+            return json.dumps({
+                "error": "搜索职位失败",
+                "message": error_msg,
+                "jobs": [],
+                "total": 0
+            }, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        error_msg = f"搜索职位失败: {str(e)}"
+        await ctx.error(error_msg)
+        return json.dumps({
+            "error": "搜索职位失败",
+            "message": error_msg,
+            "jobs": [],
+            "total": 0
         }, ensure_ascii=False, indent=2)
 
 

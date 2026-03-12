@@ -10,7 +10,9 @@ const state = {
   availableModels: FALLBACK_MODELS.slice(),
   silentSaveTimer: null,
   silentSaveSeq: 0,
-  appliedSilentSaveSeq: 0
+  appliedSilentSaveSeq: 0,
+  loginPollingTimer: null,
+  loginPollingCount: 0
 };
 
 const elements = {
@@ -171,6 +173,10 @@ function normalizeQrSrc(value) {
   if (!raw) {
     return '';
   }
+  // 支持 HTTP/HTTPS URL
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    return raw;
+  }
   if (raw.startsWith('data:image/')) {
     return raw;
   }
@@ -210,7 +216,9 @@ function humanizeLoginPhase(phase) {
 }
 
 function renderLoginState(result = {}) {
-  const phaseInfo = humanizeLoginPhase(result.phase);
+  // 如果后端返回 isLoggedIn/is_logged_in，优先使用
+  const actualPhase = result.isLoggedIn || result.is_logged_in ? 'logged-in' : result.phase;
+  const phaseInfo = humanizeLoginPhase(actualPhase);
   const qrSrc = normalizeQrSrc(result.qrImageBase64) || state.loginQrSrc;
 
   if (normalizeQrSrc(result.qrImageBase64)) {
@@ -226,6 +234,7 @@ function renderLoginState(result = {}) {
   elements.loginStatusText.textContent = phaseInfo.text;
 
   if (phaseInfo.tone === 'success') {
+    stopLoginPolling();
     elements.loginQrImage.hidden = true;
     elements.loginQrImage.removeAttribute('src');
     elements.loginQrPlaceholder.hidden = false;
@@ -499,18 +508,68 @@ async function refreshLoginStatus({ silent = false } = {}) {
         phase: result.phase,
         message: result.message
       });
-      return;
+      return result;
     }
     renderLoginState(result || {});
+    return result;
   } catch (error) {
     reportError('refreshLoginStatus', error);
     if (!silent) {
       renderLoginUnavailable();
     }
+    return null;
   }
 }
 
+function startLoginPolling() {
+  stopLoginPolling();
+  state.loginPollingCount = 0;
+
+  state.loginPollingTimer = setInterval(async () => {
+    state.loginPollingCount += 1;
+
+    // 最多轮询 40 次（约 2 分钟）
+    if (state.loginPollingCount > 40) {
+      stopLoginPolling();
+      elements.loginStatusText.textContent = '登录超时，请重新点击"开始登录"。';
+      return;
+    }
+
+    try {
+      const result = await window.desktopApi.getMcpBossLoginStatus();
+      if (result?.ok === false && result?.message) {
+        return;
+      }
+
+      const phase = String(result?.phase || '').toLowerCase();
+
+      // 如果已登录成功，停止轮询
+      if (phase.includes('logged-in') || phase.includes('logged_in') || phase.includes('success') || result?.isLoggedIn) {
+        stopLoginPolling();
+        renderLoginState(result || {});
+        return;
+      }
+
+      // 如果状态变化，更新显示
+      if (result?.qrImageBase64 && result.qrImageBase64 !== state.loginQrSrc) {
+        renderLoginState(result || {});
+      }
+    } catch (error) {
+      reportError('loginPolling', error);
+    }
+  }, 3000);
+}
+
+function stopLoginPolling() {
+  if (state.loginPollingTimer) {
+    clearInterval(state.loginPollingTimer);
+    state.loginPollingTimer = null;
+  }
+  state.loginPollingCount = 0;
+}
+
 async function startLogin() {
+  stopLoginPolling();
   elements.loginPhaseBadge.textContent = '等待扫码';
   elements.loginPhaseBadge.className = 'status-badge waiting';
   elements.loginStatusText.textContent = '正在获取二维码，请稍候...';
@@ -518,6 +577,11 @@ async function startLogin() {
   try {
     const result = await window.desktopApi.requestMcpBossLoginQr();
     renderLoginState(result || {});
+
+    // 如果二维码获取成功，开始自动轮询登录状态
+    if (result?.qrImageBase64 || result?.phase) {
+      startLoginPolling();
+    }
   } catch (error) {
     reportError('startLogin', error);
     const message = error?.message || '暂时无法获取二维码，请稍后再试。';
