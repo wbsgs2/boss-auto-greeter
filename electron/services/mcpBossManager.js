@@ -2,8 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
+const { app } = require('electron');
 
 const SCRIPT_CANDIDATES = ['mcp_boss.py', 'boss_zhipin_fastmcp_v2.py'];
+const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 
 class McpBossManager extends EventEmitter {
   constructor() {
@@ -13,8 +15,10 @@ class McpBossManager extends EventEmitter {
     this.requestTimeoutMs = 30 * 1000;
     this.healthcheckTimeoutMs = 3 * 1000;
     this.startupWaitMs = 15 * 1000;
+    this.sourceServicePath = '';
     this.servicePath = '';
     this.serviceScript = '';
+    this.pythonRuntime = null;
     this.startingPromise = null;
     this.requestId = 0;
     this.status = {
@@ -33,7 +37,8 @@ class McpBossManager extends EventEmitter {
 
   configure(config = {}) {
     const remoteUrl = String(config.remoteUrl || '').trim();
-    this.servicePath = String(config.path ?? config.cwd ?? '').trim();
+    this.sourceServicePath = String(config.path ?? config.cwd ?? '').trim();
+    this.servicePath = '';
     this.serviceScript = '';
     this.lastConfig = this.buildLaunchConfig(config);
     this.remoteUrl = remoteUrl || 'http://127.0.0.1:8000/mcp';
@@ -46,9 +51,14 @@ class McpBossManager extends EventEmitter {
   buildLaunchConfig(config = {}) {
     const detected = this.detectInstalledService(config);
     if (detected) {
-      return {
+      const runtime = this.pythonRuntime || {
         command: 'python',
-        args: [this.serviceScript],
+        baseArgs: []
+      };
+
+      return {
+        command: runtime.command,
+        args: [...runtime.baseArgs, this.serviceScript],
         cwd: this.servicePath
       };
     }
@@ -113,7 +123,7 @@ class McpBossManager extends EventEmitter {
     const spawnOptions = {
       cwd: this.lastConfig.cwd || process.cwd(),
       shell: process.platform === 'win32',
-      env: process.env
+      env: this.buildProcessEnv()
     };
 
     try {
@@ -436,6 +446,8 @@ class McpBossManager extends EventEmitter {
         throw new Error(this.buildMissingServiceMessage(this.lastConfig));
       }
 
+      await this.installService();
+      this.lastConfig = this.buildLaunchConfig(this.lastConfig);
       return this.startAndWaitUntilAccessible();
     } catch (error) {
       this.updateStatus({
@@ -447,6 +459,57 @@ class McpBossManager extends EventEmitter {
       });
       throw error;
     }
+  }
+
+  async installService() {
+    this.ensureServiceWorkspace();
+    this.updateStatus({
+      phase: 'installing',
+      message: '正在检测 Python...',
+      pid: null,
+      startedAt: null,
+      commandSummary: this.describeCommand(this.lastConfig)
+    });
+
+    const runtime = await this.detectPythonRuntime();
+    await this.ensurePip(runtime);
+    if (!(await this.hasRequiredPythonDeps(runtime))) {
+      this.updateStatus({
+        phase: 'installing',
+        message: '正在安装依赖...',
+        pid: null,
+        startedAt: null,
+        commandSummary: this.describeCommand(this.lastConfig)
+      });
+
+      const pipArgs = [...runtime.baseArgs, '-m', 'pip', 'install'];
+      if (!this.isEmbeddedRuntime(runtime)) {
+        pipArgs.push('--user');
+      }
+      pipArgs.push('-r', 'requirements.txt');
+
+      await this.runCommand(runtime.command, pipArgs, {
+        cwd: this.servicePath,
+        label: '安装依赖'
+      });
+    }
+
+    if (!this.hasInstalledChromium()) {
+      this.updateStatus({
+        phase: 'installing',
+        message: '正在安装浏览器组件...',
+        pid: null,
+        startedAt: null,
+        commandSummary: this.describeCommand(this.lastConfig)
+      });
+
+      await this.runCommand(runtime.command, [...runtime.baseArgs, '-m', 'playwright', 'install', 'chromium'], {
+        cwd: this.servicePath,
+        label: '安装浏览器组件'
+      });
+    }
+
+    this.pythonRuntime = runtime;
   }
 
   async startAndWaitUntilAccessible() {
@@ -510,6 +573,269 @@ class McpBossManager extends EventEmitter {
     }
   }
 
+  async detectPythonRuntime() {
+    const candidates = process.platform === 'win32'
+      ? [
+        { command: 'python', baseArgs: [] },
+        { command: 'py', baseArgs: ['-3'] }
+      ]
+      : [
+        { command: 'python3', baseArgs: [] },
+        { command: 'python', baseArgs: [] }
+      ];
+
+    for (const candidate of candidates) {
+      if (await this.canRunPython(candidate.command, [...candidate.baseArgs, '--version'])) {
+        this.pythonRuntime = candidate;
+        return candidate;
+      }
+    }
+
+    if (process.platform === 'win32') {
+      const embedded = await this.installEmbeddedPython();
+      this.pythonRuntime = embedded;
+      return embedded;
+    }
+
+    throw new Error('未检测到可用的 Python 运行环境');
+  }
+
+  async canRunPython(command, args) {
+    try {
+      await this.runCommand(command, args, {
+        cwd: this.servicePath || process.cwd(),
+        label: '检测 Python',
+        quiet: true
+      });
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  async installEmbeddedPython() {
+    const runtimeDir = this.getManagedPythonRuntimeDir();
+    const pythonExe = path.join(runtimeDir, 'python.exe');
+
+    if (fs.existsSync(pythonExe)) {
+      return {
+        command: pythonExe,
+        baseArgs: []
+      };
+    }
+
+    fs.mkdirSync(runtimeDir, { recursive: true });
+
+    this.updateStatus({
+      phase: 'installing',
+      message: '正在下载 Python...',
+      pid: null,
+      startedAt: null,
+      commandSummary: this.describeCommand(this.lastConfig)
+    });
+
+    const embeddedUrl = await this.fetchEmbeddedPythonUrl();
+    const zipPath = path.join(runtimeDir, 'python-embed.zip');
+    await this.downloadToFile(embeddedUrl, zipPath);
+
+    this.updateStatus({
+      phase: 'installing',
+      message: '正在解压 Python...',
+      pid: null,
+      startedAt: null,
+      commandSummary: this.describeCommand(this.lastConfig)
+    });
+
+    await this.extractEmbeddedPython(zipPath, runtimeDir);
+    this.configureEmbeddedPython(runtimeDir);
+
+    return {
+      command: pythonExe,
+      baseArgs: []
+    };
+  }
+
+  async fetchEmbeddedPythonUrl() {
+    const response = await fetch('https://www.python.org/downloads/windows/');
+    if (!response.ok) {
+      throw new Error(`获取 Python 下载地址失败（HTTP ${response.status}）`);
+    }
+
+    const html = await response.text();
+    const match = html.match(/https:\/\/www\.python\.org\/ftp\/python\/[^"' ]+\/python-[^"' ]+-embed-amd64\.zip/i)
+      || html.match(/\/ftp\/python\/[^"' ]+\/python-[^"' ]+-embed-amd64\.zip/i);
+
+    if (!match) {
+      throw new Error('未找到可用的嵌入式 Python 下载地址');
+    }
+
+    if (match[0].startsWith('http')) {
+      return match[0];
+    }
+
+    return `https://www.python.org${match[0]}`;
+  }
+
+  async downloadToFile(url, destination) {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`下载文件失败（HTTP ${response.status}）`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.writeFileSync(destination, buffer);
+  }
+
+  async extractEmbeddedPython(zipPath, destination) {
+    await this.runCommand('powershell', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      `Expand-Archive -LiteralPath '${zipPath.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`
+    ], {
+      cwd: destination,
+      label: '解压 Python'
+    });
+  }
+
+  configureEmbeddedPython(runtimeDir) {
+    const pthFile = fs.readdirSync(runtimeDir).find((name) => /^python\d+\._pth$/i.test(name));
+    if (!pthFile) {
+      return;
+    }
+
+    const pthPath = path.join(runtimeDir, pthFile);
+    const raw = fs.readFileSync(pthPath, 'utf8');
+    const lines = raw.split(/\r?\n/);
+    const nextLines = [];
+    let hasSitePackages = false;
+
+    for (const line of lines) {
+      if (line.trim().toLowerCase() === 'lib\\site-packages') {
+        hasSitePackages = true;
+      }
+
+      if (line.trim() === '#import site') {
+        nextLines.push('import site');
+        continue;
+      }
+
+      nextLines.push(line);
+    }
+
+    if (!hasSitePackages) {
+      nextLines.splice(Math.max(nextLines.length - 1, 0), 0, 'Lib\\site-packages');
+    }
+
+    fs.writeFileSync(pthPath, `${nextLines.join('\n')}\n`, 'utf8');
+  }
+
+  async ensurePip(runtime) {
+    if (await this.canRunPython(runtime.command, [...runtime.baseArgs, '-m', 'pip', '--version'])) {
+      return;
+    }
+
+    this.updateStatus({
+      phase: 'installing',
+      message: '正在安装 pip...',
+      pid: null,
+      startedAt: null,
+      commandSummary: this.describeCommand(this.lastConfig)
+    });
+
+    const getPipPath = path.join(this.getManagedPythonRuntimeDir(), 'get-pip.py');
+    await this.downloadToFile(GET_PIP_URL, getPipPath);
+    await this.runCommand(runtime.command, [...runtime.baseArgs, getPipPath], {
+      cwd: path.dirname(getPipPath),
+      label: '安装 pip'
+    });
+  }
+
+  async hasRequiredPythonDeps(runtime) {
+    const checkScript = [
+      'import importlib.util, sys',
+      "modules = ['fastmcp', 'requests', 'uvicorn', 'starlette', 'playwright']",
+      "modules.append('Crypto')",
+      'missing = [name for name in modules if importlib.util.find_spec(name) is None]',
+      'sys.exit(0 if not missing else 1)'
+    ].join('; ');
+
+    try {
+      await this.runCommand(runtime.command, [...runtime.baseArgs, '-c', checkScript], {
+        cwd: this.servicePath || process.cwd(),
+        label: '检测依赖',
+        quiet: true
+      });
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  hasInstalledChromium() {
+    const browsersPath = this.getPlaywrightBrowsersPath();
+
+    try {
+      if (!fs.existsSync(browsersPath) || !fs.statSync(browsersPath).isDirectory()) {
+        return false;
+      }
+
+      return fs.readdirSync(browsersPath).some((name) => name.startsWith('chromium-'));
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  isEmbeddedRuntime(runtime) {
+    const command = path.resolve(String(runtime?.command || ''));
+    return command === path.resolve(path.join(this.getManagedPythonRuntimeDir(), 'python.exe'));
+  }
+
+  runCommand(command, args, { cwd, label, quiet = false }) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd,
+        shell: process.platform === 'win32',
+        env: this.buildProcessEnv()
+      });
+
+      if (!quiet) {
+        child.stdout?.on('data', (chunk) => {
+          this.emit('log', {
+            level: 'info',
+            source: 'mcp-boss-installer',
+            time: new Date().toISOString(),
+            message: chunk.toString().trim()
+          });
+        });
+
+        child.stderr?.on('data', (chunk) => {
+          this.emit('log', {
+            level: 'error',
+            source: 'mcp-boss-installer',
+            time: new Date().toISOString(),
+            message: chunk.toString().trim()
+          });
+        });
+      }
+
+      child.on('error', (error) => {
+        reject(new Error(`${label}失败：${error.message}`));
+      });
+
+      child.on('exit', (code) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(`${label}失败（code=${code}）`));
+      });
+    });
+  }
+
   detectInstalledService(config = {}) {
     const candidates = this.resolveCandidateDirs(config);
 
@@ -519,11 +845,14 @@ class McpBossManager extends EventEmitter {
         continue;
       }
 
-      this.servicePath = dir;
+      this.sourceServicePath = dir;
+      this.servicePath = this.getManagedServiceRoot();
       this.serviceScript = script;
       return true;
     }
 
+    this.sourceServicePath = '';
+    this.servicePath = '';
     this.serviceScript = '';
     return false;
   }
@@ -538,6 +867,7 @@ class McpBossManager extends EventEmitter {
       values.add(path.resolve(text));
     };
 
+    pushValue(this.sourceServicePath);
     pushValue(this.servicePath);
     pushValue(config.path);
     pushValue(config.cwd);
@@ -568,6 +898,42 @@ class McpBossManager extends EventEmitter {
     }
 
     return '';
+  }
+
+  getManagedServiceRoot() {
+    if (app?.isReady?.()) {
+      return path.join(app.getPath('userData'), 'mcp-boss-runtime');
+    }
+
+    return path.resolve(process.cwd(), '.mcp-boss-runtime');
+  }
+
+  getManagedPythonRuntimeDir() {
+    return path.join(this.getManagedServiceRoot(), '.python-runtime');
+  }
+
+  getPlaywrightBrowsersPath() {
+    return path.join(this.getManagedServiceRoot(), '.playwright');
+  }
+
+  buildProcessEnv(extra = {}) {
+    return {
+      ...process.env,
+      PLAYWRIGHT_BROWSERS_PATH: this.getPlaywrightBrowsersPath(),
+      ...extra
+    };
+  }
+
+  ensureServiceWorkspace() {
+    if (!this.sourceServicePath) {
+      return;
+    }
+
+    const source = this.sourceServicePath;
+    const target = this.getManagedServiceRoot();
+    fs.mkdirSync(target, { recursive: true });
+    fs.cpSync(source, target, { recursive: true, force: true });
+    this.servicePath = target;
   }
 
   async callRemoteMethod(name, params = {}) {
