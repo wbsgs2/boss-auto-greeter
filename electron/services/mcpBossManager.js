@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { spawn } = require('node:child_process');
+const { randomUUID } = require('node:crypto');
 const { app } = require('electron');
 
 const SCRIPT_CANDIDATES = ['mcp_boss.py', 'boss_zhipin_fastmcp_v2.py'];
@@ -21,6 +22,7 @@ class McpBossManager extends EventEmitter {
     this.pythonRuntime = null;
     this.startingPromise = null;
     this.requestId = 0;
+    this.mcpSessionId = null;
     this.status = {
       phase: 'stopped',
       message: '服务尚未启动',
@@ -37,11 +39,15 @@ class McpBossManager extends EventEmitter {
 
   configure(config = {}) {
     const remoteUrl = String(config.remoteUrl || '').trim();
+    const nextRemoteUrl = remoteUrl || 'http://127.0.0.1:8000/mcp';
+    if (this.remoteUrl !== nextRemoteUrl) {
+      this.mcpSessionId = null;
+    }
     this.sourceServicePath = String(config.path ?? config.cwd ?? '').trim();
     this.servicePath = '';
     this.serviceScript = '';
     this.lastConfig = this.buildLaunchConfig(config);
-    this.remoteUrl = remoteUrl || 'http://127.0.0.1:8000/mcp';
+    this.remoteUrl = nextRemoteUrl;
     this.updateStatus({
       ...this.status,
       commandSummary: this.describeCommand(this.lastConfig)
@@ -100,6 +106,7 @@ class McpBossManager extends EventEmitter {
     }
 
     this.lastConfig = this.buildLaunchConfig(this.lastConfig);
+    this.mcpSessionId = null;
 
     if (!this.lastConfig.command) {
       this.updateStatus({
@@ -180,6 +187,7 @@ class McpBossManager extends EventEmitter {
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
       });
+      this.mcpSessionId = null;
       this.child = null;
     });
 
@@ -197,12 +205,14 @@ class McpBossManager extends EventEmitter {
         startedAt: null,
         commandSummary: this.describeCommand(this.lastConfig)
       });
+      this.mcpSessionId = null;
       this.child = null;
     });
   }
 
   stop() {
     if (!this.child) {
+      this.mcpSessionId = null;
       this.updateStatus({
         phase: 'stopped',
         message: '服务已停止',
@@ -1006,6 +1016,7 @@ class McpBossManager extends EventEmitter {
 
   async postRemote(body, methodName) {
     let response;
+    const sessionId = this.getOrCreateMcpSessionId();
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
@@ -1016,7 +1027,8 @@ class McpBossManager extends EventEmitter {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          accept: 'application/json, text/event-stream'
+          accept: 'application/json, text/event-stream',
+          'Mcp-Session-Id': sessionId
         },
         body: JSON.stringify(body),
         signal: controller.signal
@@ -1030,6 +1042,7 @@ class McpBossManager extends EventEmitter {
       clearTimeout(timeoutId);
     }
 
+    this.captureMcpSessionIdFromResponse(response);
     const text = await response.text();
     const json = this.safeJsonParse(text);
 
@@ -1043,6 +1056,31 @@ class McpBossManager extends EventEmitter {
     }
 
     return json;
+  }
+
+  getOrCreateMcpSessionId() {
+    if (!this.mcpSessionId) {
+      this.mcpSessionId = this.generateMcpSessionId();
+    }
+
+    return this.mcpSessionId;
+  }
+
+  generateMcpSessionId() {
+    try {
+      return randomUUID();
+    } catch (_error) {
+      return `boss-auto-greeter-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+  }
+
+  captureMcpSessionIdFromResponse(response) {
+    const nextSessionId = response?.headers?.get('mcp-session-id')
+      || response?.headers?.get('Mcp-Session-Id');
+
+    if (nextSessionId) {
+      this.mcpSessionId = nextSessionId;
+    }
   }
 
   extractRpcError(payload) {
