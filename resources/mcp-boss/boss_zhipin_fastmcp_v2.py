@@ -528,49 +528,51 @@ class BossZhipinAPI:
 
     @staticmethod
     async def get_job_list(session: requests.Session, params: dict) -> dict:
-        """获取职位列表"""
-        url = "https://www.zhipin.com/wapi/zpgeek/pc/recommend/job/list.json"
+        """通过搜索接口获取职位列表，支持关键字和城市过滤"""
+        url = "https://www.zhipin.com/wapi/zpgeek/pc/web/job/list.json"
 
-        # 转换文本参数为代码
+        keyword = str(params.get("keyword") or "").strip()
+        city = str(params.get("city") or "").strip()
+        experience = params.get("experience") or "不限"
+        salary = params.get("salary") or "不限"
+        job_type = params.get("jobType") or "全职"
+
         converted_params = {}
-        if 'experience' in params and params['experience'] in BossZhipinAPI.EXPERIENCE_MAP:
-            converted_params['experience'] = BossZhipinAPI.EXPERIENCE_MAP[params['experience']]
+        page = int(params.get("page") or 1)
+        page_size = int(params.get("pageSize") or 20)
 
-        if 'jobType' in params and params['jobType'] in BossZhipinAPI.JOB_TYPE_MAP:
-            converted_params['jobType'] = BossZhipinAPI.JOB_TYPE_MAP[params['jobType']]
+        converted_params["page"] = page
+        converted_params["pageSize"] = page_size
+        if keyword:
+            converted_params["keyword"] = keyword
+        if city:
+            converted_params["city"] = city
+        if experience in BossZhipinAPI.EXPERIENCE_MAP:
+            converted_params["experience"] = BossZhipinAPI.EXPERIENCE_MAP[experience]
+        if job_type in BossZhipinAPI.JOB_TYPE_MAP:
+            converted_params["jobType"] = BossZhipinAPI.JOB_TYPE_MAP[job_type]
+        if salary in BossZhipinAPI.SALARY_MAP:
+            converted_params["salary"] = BossZhipinAPI.SALARY_MAP[salary]
 
-        if 'salary' in params and params['salary'] in BossZhipinAPI.SALARY_MAP:
-            converted_params['salary'] = BossZhipinAPI.SALARY_MAP[params['salary']]
-
-        # 设置默认参数
-        default_params = {
-            "page": 1,
-            "pageSize": 15,
-            "_": int(time.time() * 1000)  # 时间戳
-        }
-        default_params.update(converted_params)
-
-        # 添加其他参数（如 encryptExpectId 等）
-        for key in ['page', 'pageSize', 'encryptExpectId']:
-            if key in params:
-                default_params[key] = params[key]
+        # 允许额外的控制参数被覆盖（如 encryptExpectId）
+        for key in ['encryptExpectId', 'sortBy']:
+            if key in params and params[key]:
+                converted_params[key] = params[key]
 
         try:
-            resp = session.get(url, params=default_params, timeout=10)
+            resp = session.get(url, params=converted_params, timeout=12)
             resp.raise_for_status()
 
             data = resp.json()
-
             if data.get("code") != 0:
                 raise Exception(f"API错误: {data.get('message', '未知错误')}")
 
             zp_data = data.get("zpData", {})
             job_list = zp_data.get("jobList", [])
 
-            # 转换为标准格式
             jobs = []
             for job in job_list:
-                job_info = {
+                jobs.append({
                     "securityId": job.get("securityId"),
                     "encryptBossId": job.get("encryptBossId"),
                     "jobDegree": job.get("jobDegree"),
@@ -588,15 +590,18 @@ class BossZhipinAPI:
                     "industry": job.get("industry"),
                     "contact": job.get("contact", False),
                     "showTopPosition": job.get("showTopPosition", False)
-                }
-                jobs.append(job_info)
+                })
 
             return {
                 "status": "success",
                 "data": {
                     "hasMore": zp_data.get("hasMore", False),
                     "jobList": jobs,
-                    "total": len(jobs)
+                    "total": zp_data.get("total", len(jobs)),
+                    "page": page,
+                    "pageSize": page_size,
+                    "keyword": keyword,
+                    "city": city
                 }
             }
 
@@ -612,7 +617,7 @@ class BossZhipinAPI:
             }
 
     @staticmethod
-    async def greet_boss(session: requests.Session, security_id: str, job_id: str) -> dict:
+    async def greet_boss(session: requests.Session, security_id: str, job_id: str, message: str = "") -> dict:
         """向HR发送打招呼"""
         url = "https://www.zhipin.com/wapi/zpgeek/friend/add.json"
 
@@ -620,6 +625,8 @@ class BossZhipinAPI:
             "securityId": security_id,
             "jobId": job_id
         }
+        if message:
+            params["content"] = message
 
         try:
             resp = session.get(url, params=params, timeout=10)
@@ -1323,29 +1330,27 @@ async def search_jobs(
                 "total": 0
             }, ensure_ascii=False, indent=2)
 
-        # 获取session并设置API请求头
         session = state.get_session()
         BossZhipinAPI.setup_api_headers(session, state.login_status.cookie, state.login_status.bst)
 
-        # 转换薪资范围格式
-        salary = salaryRange if salaryRange else "不限"
-
-        # 构造API参数 - 使用推荐职位接口
-        params = {
+        payload = {
             "page": page,
+            "pageSize": pageSize,
+            "keyword": keyword,
+            "city": city,
             "experience": experience if experience else "不限",
             "jobType": "全职",
-            "salary": salary
+            "salary": salaryRange if salaryRange else "不限",
+            "education": education if education else "不限",
+            "sortBy": sortBy
         }
 
-        # 调用API获取职位
-        result = await BossZhipinAPI.get_job_list(session, params)
+        result = await BossZhipinAPI.get_job_list(session, payload)
 
         if result.get("status") == "success":
             data = result.get("data", {})
             raw_jobs = data.get("jobList", [])
 
-            # 转换为前端期望的格式
             jobs = []
             for job in raw_jobs:
                 jobs.append({
@@ -1355,11 +1360,11 @@ async def search_jobs(
                     "jobName": job.get("jobName", job.get("title", "未知职位")),
                     "company": job.get("companyName", job.get("company", "未知公司")),
                     "companyName": job.get("companyName", job.get("company", "未知公司")),
-                    "salary": job.get("salary", "面议"),
-                    "salaryRange": job.get("salary", job.get("salaryRange", "面议")),
-                    "city": job.get("city", city),
-                    "location": job.get("city", job.get("location", "")),
-                    "experience": job.get("experience", experience if experience else "不限"),
+                    "salary": job.get("salary", job.get("salaryDesc", "面议")),
+                    "salaryRange": job.get("salary", job.get("salaryRange", job.get("salaryDesc", "面议"))),
+                    "city": job.get("city", job.get("cityName", city)),
+                    "location": job.get("city", job.get("location", job.get("cityName", ""))),
+                    "experience": job.get("experience", job.get("jobExperience", experience if experience else "不限")),
                     "education": job.get("education", education if education else "不限")
                 })
 
@@ -1369,8 +1374,8 @@ async def search_jobs(
                 "status": "success",
                 "jobs": jobs,
                 "total": data.get("total", len(jobs)),
-                "page": page,
-                "pageSize": pageSize,
+                "page": data.get("page", page),
+                "pageSize": data.get("pageSize", pageSize),
                 "query": {
                     "keyword": keyword,
                     "city": city,
@@ -1386,7 +1391,14 @@ async def search_jobs(
                 "error": "搜索职位失败",
                 "message": error_msg,
                 "jobs": [],
-                "total": 0
+                "total": 0,
+                "query": {
+                    "keyword": keyword,
+                    "city": city,
+                    "salaryRange": salaryRange,
+                    "experience": experience,
+                    "education": education
+                }
             }, ensure_ascii=False, indent=2)
 
     except Exception as e:
@@ -1417,12 +1429,10 @@ async def send_greeting_tool(
 
         await ctx.info(f"发送打招呼到职位 {job_id}")
 
-        # 获取session并设置API请求头
         session = state.get_session()
         BossZhipinAPI.setup_api_headers(session, state.login_status.cookie, state.login_status.bst)
 
-        # 调用真实的API
-        result = await BossZhipinAPI.greet_boss(session, security_id, job_id)
+        result = await BossZhipinAPI.greet_boss(session, security_id, job_id, message)
 
         if result["status"] == "success":
             await ctx.info(f"打招呼发送成功: {job_id}")

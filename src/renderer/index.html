@@ -143,6 +143,40 @@
             </section>
           </div>
         </section>
+        <section id="runner-panel" class="panel-card runner-card">
+          <div class="runner-card-header">
+            <div>
+              <p class="section-kicker">第四步</p>
+              <h3>自动打招呼</h3>
+            </div>
+            <div id="runner-phase" class="runner-phase">状态：等待触发</div>
+          </div>
+
+          <div class="runner-controls">
+            <button id="runner-start-btn" type="button">开始任务</button>
+            <button id="runner-pause-btn" class="secondary" type="button">暂停</button>
+            <button id="runner-stop-btn" class="secondary" type="button">停止</button>
+            <button id="runner-cycle-btn" class="secondary" type="button">跑一轮</button>
+          </div>
+
+          <div class="runner-stats" id="runner-stats">
+            <p><strong>最近动作：</strong><span id="runner-last-action">无</span></p>
+            <p><strong>搜索调用：</strong><span id="runner-search-calls">0</span></p>
+            <p><strong>选中岗位：</strong><span id="runner-selected-jobs">0</span></p>
+            <p><strong>已发送成功：</strong><span id="runner-greet-success">0</span></p>
+            <p><strong>失败次数：</strong><span id="runner-greet-failed">0</span></p>
+          </div>
+
+          <div class="runner-log-wrapper">
+            <div class="runner-log-heading">
+              <h4>运行日志</h4>
+              <button id="runner-clear-log" class="secondary" type="button">清空</button>
+            </div>
+            <div id="runner-log" class="runner-log">
+              <p class="helper-text">启动任务后日志会在这里实时出现。</p>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
 

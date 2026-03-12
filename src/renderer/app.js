@@ -12,7 +12,8 @@ const state = {
   silentSaveSeq: 0,
   appliedSilentSaveSeq: 0,
   loginPollingTimer: null,
-  loginPollingCount: 0
+  loginPollingCount: 0,
+  runnerLogEntries: []
 };
 
 const elements = {
@@ -44,6 +45,19 @@ const elements = {
   searchStatus: document.querySelector('#search-status'),
   searchMeta: document.querySelector('#search-meta'),
   searchResults: document.querySelector('#search-results')
+,
+  runnerPhase: document.querySelector('#runner-phase'),
+  runnerLastAction: document.querySelector('#runner-last-action'),
+  runnerSearchCalls: document.querySelector('#runner-search-calls'),
+  runnerSelectedJobs: document.querySelector('#runner-selected-jobs'),
+  runnerGreetSuccess: document.querySelector('#runner-greet-success'),
+  runnerGreetFailed: document.querySelector('#runner-greet-failed'),
+  runnerStartBtn: document.querySelector('#runner-start-btn'),
+  runnerPauseBtn: document.querySelector('#runner-pause-btn'),
+  runnerStopBtn: document.querySelector('#runner-stop-btn'),
+  runnerCycleBtn: document.querySelector('#runner-cycle-btn'),
+  runnerClearLogBtn: document.querySelector('#runner-clear-log'),
+  runnerLog: document.querySelector('#runner-log')
 };
 
 function switchTab(tabId) {
@@ -363,6 +377,134 @@ function renderSearchResults(result) {
   }).join('');
 }
 
+function formatRunnerTime(raw) {
+  try {
+    const date = new Date(raw);
+    if (!Number.isNaN(date.getTime())) {
+      return date.toLocaleTimeString();
+    }
+  } catch (_error) {
+    // ignore
+  }
+  return new Date().toLocaleTimeString();
+}
+
+function renderRunnerSnapshot(snapshot) {
+  if (!snapshot) {
+    return;
+  }
+
+  const { phase, stats = {}, lastAction, updatedAt } = snapshot;
+  if (elements.runnerPhase) {
+    elements.runnerPhase.textContent = `状态：${phase || '未运行'}`;
+  }
+  if (elements.runnerLastAction) {
+    elements.runnerLastAction.textContent = stats.lastAction || lastAction || '无';
+  }
+  if (elements.runnerSearchCalls) {
+    elements.runnerSearchCalls.textContent = String(stats.searchCalls ?? 0);
+  }
+  if (elements.runnerSelectedJobs) {
+    elements.runnerSelectedJobs.textContent = String(stats.selectedJobs ?? 0);
+  }
+  if (elements.runnerGreetSuccess) {
+    elements.runnerGreetSuccess.textContent = String(stats.greetSuccess ?? 0);
+  }
+  if (elements.runnerGreetFailed) {
+    elements.runnerGreetFailed.textContent = String(stats.greetFailed ?? 0);
+  }
+
+}
+
+function renderRunnerLogs() {
+  if (!elements.runnerLog) {
+    return;
+  }
+
+  if (state.runnerLogEntries.length === 0) {
+    elements.runnerLog.innerHTML = '<p class="helper-text">启动任务后日志会在这里实时出现。</p>';
+    return;
+  }
+
+  elements.runnerLog.innerHTML = state.runnerLogEntries.map((entry) => {
+    const level = entry.level || 'info';
+    const time = escapeHtml(formatRunnerTime(entry.time));
+    const source = escapeHtml(entry.source || 'runner');
+    const message = escapeHtml(entry.message || '-');
+    return `<div class="runner-log-entry ${level}"><strong>${time}</strong> [${source}] ${message}</div>`;
+  }).join('');
+}
+
+function appendRunnerLog(entry = {}) {
+  const normalized = {
+    level: String(entry.level || 'info').toLowerCase(),
+    message: entry.message || entry.msg || '',
+    source: entry.source || 'runner',
+    time: entry.time || new Date().toISOString()
+  };
+
+  state.runnerLogEntries.unshift(normalized);
+  state.runnerLogEntries = state.runnerLogEntries.slice(0, 40);
+  renderRunnerLogs();
+}
+
+function clearRunnerLog() {
+  state.runnerLogEntries = [];
+  renderRunnerLogs();
+}
+
+function collectRunnerPayload() {
+  return {
+    jobSearch: collectSearchPayload()
+  };
+}
+
+async function refreshRunnerSnapshot() {
+  if (!window.desktopApi || typeof window.desktopApi.getRunnerSnapshot !== 'function') {
+    return;
+  }
+  try {
+    const snapshot = await window.desktopApi.getRunnerSnapshot();
+    renderRunnerSnapshot(snapshot);
+  } catch (error) {
+    appendRunnerLog({
+      level: 'error',
+      message: `刷新 runner 状态失败：${error?.message || error}`,
+      source: 'runner'
+    });
+  }
+}
+
+async function callRunnerApi(label, fn, payload) {
+  if (!fn) {
+    appendRunnerLog({
+      level: 'error',
+      message: `${label} 接口不可用`,
+      source: 'renderer'
+    });
+    return;
+  }
+
+  try {
+    const response = payload ? await fn(payload) : await fn();
+    const snapshot = response?.snapshot || response;
+    if (snapshot) {
+      renderRunnerSnapshot(snapshot);
+    }
+    appendRunnerLog({
+      level: 'info',
+      message: `${label} 成功`,
+      source: 'renderer'
+    });
+  } catch (error) {
+    appendRunnerLog({
+      level: 'error',
+      message: `${label} 失败：${error?.message || error}`,
+      source: 'renderer'
+    });
+  }
+}
+
 async function loadConfig() {
   try {
     const config = await window.desktopApi.getConfig();
@@ -654,6 +796,46 @@ function bindEvents() {
       applyManagerStatus(status);
     });
   }
+
+  if (elements.runnerStartBtn) {
+    elements.runnerStartBtn.addEventListener('click', () => {
+      callRunnerApi('开始任务', window.desktopApi?.startRunner?.bind(window.desktopApi));
+    });
+  }
+  if (elements.runnerPauseBtn) {
+    elements.runnerPauseBtn.addEventListener('click', () => {
+      callRunnerApi('暂停任务', window.desktopApi?.pauseRunner?.bind(window.desktopApi));
+    });
+  }
+  if (elements.runnerStopBtn) {
+    elements.runnerStopBtn.addEventListener('click', () => {
+      callRunnerApi('停止任务', window.desktopApi?.stopRunner?.bind(window.desktopApi));
+    });
+  }
+  if (elements.runnerCycleBtn) {
+    elements.runnerCycleBtn.addEventListener('click', () => {
+      callRunnerApi(
+        '执行一轮',
+        window.desktopApi?.runnerRunCycle?.bind(window.desktopApi),
+        collectRunnerPayload()
+      );
+    });
+  }
+  if (elements.runnerClearLogBtn) {
+    elements.runnerClearLogBtn.addEventListener('click', clearRunnerLog);
+  }
+
+  if (typeof window.desktopApi?.onRunnerLog === 'function') {
+    window.desktopApi.onRunnerLog((payload) => {
+      appendRunnerLog(payload);
+    });
+  }
+
+  if (typeof window.desktopApi?.onRunnerState === 'function') {
+    window.desktopApi.onRunnerState((snapshot) => {
+      renderRunnerSnapshot(snapshot);
+    });
+  }
 }
 
 async function init() {
@@ -663,6 +845,7 @@ async function init() {
   }
 
   bindEvents();
+  renderRunnerLogs();
 
   try {
     const version = await window.desktopApi.getAppVersion();
@@ -681,6 +864,7 @@ async function init() {
     reportError('getMcpBossStatus', error);
   }
   await refreshLoginStatus({ silent: true });
+  await refreshRunnerSnapshot();
 }
 
 init().catch((error) => {

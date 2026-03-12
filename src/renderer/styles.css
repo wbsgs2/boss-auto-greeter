@@ -443,6 +443,81 @@ button.secondary {
   font-size: 13px;
 }
 
+.runner-card {
+  margin-top: 24px;
+  border-radius: 28px;
+  box-shadow: 0 14px 35px rgba(35, 84, 124, 0.1);
+}
+
+.runner-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.runner-phase {
+  font-weight: 600;
+  color: var(--primary-strong);
+}
+
+.runner-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.runner-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.runner-log-wrapper {
+  border-radius: 20px;
+  background: var(--surface-soft);
+  padding: 18px;
+  border: 1px solid rgba(129, 155, 193, 0.2);
+}
+
+.runner-log-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.runner-log {
+  min-height: 120px;
+  max-height: 220px;
+  overflow-y: auto;
+  border-radius: 16px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid rgba(129, 155, 193, 0.18);
+  display: grid;
+  gap: 8px;
+}
+
+.runner-log-entry {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+.runner-log-entry strong {
+  color: var(--text);
+}
+
+.runner-log-entry.error {
+  color: var(--error);
+}
+
 @keyframes fade-in {
   from {
     opacity: 0;
