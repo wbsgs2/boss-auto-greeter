@@ -1,13 +1,17 @@
-const state = {
-  loginQrSrc: ''
-};
-
 const FALLBACK_MODELS = [
   'Qwen/Qwen2.5-7B-Instruct',
   'Qwen/Qwen2.5-14B-Instruct',
   'Qwen/Qwen2.5-32B-Instruct',
   'deepseek-ai/DeepSeek-V2.5'
 ];
+
+const state = {
+  loginQrSrc: '',
+  availableModels: FALLBACK_MODELS.slice(),
+  silentSaveTimer: null,
+  silentSaveSeq: 0,
+  appliedSilentSaveSeq: 0
+};
 
 const elements = {
   tabButtons: document.querySelectorAll('.tab-button'),
@@ -100,21 +104,48 @@ function collectSearchPayload() {
   };
 }
 
+function validateApiKey(apiKey) {
+  if (!apiKey) {
+    return '';
+  }
+
+  if (/\s/.test(apiKey)) {
+    return 'API Key 格式不正确，请检查是否包含空格。';
+  }
+
+  if (apiKey.length < 10) {
+    return 'API Key 看起来不完整，请检查后再试。';
+  }
+
+  return '';
+}
+
 function setModelOptions(models, selectedModel = '') {
   const options = Array.from(new Set(
     (Array.isArray(models) && models.length > 0 ? models : FALLBACK_MODELS)
       .map((item) => String(item || '').trim())
       .filter(Boolean)
   ));
+  const safeOptions = options.length > 0 ? options : FALLBACK_MODELS.slice();
+
+  state.availableModels = safeOptions.slice();
 
   elements.model.innerHTML = options
     .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
     .join('');
 
-  elements.model.value = options.includes(selectedModel) ? selectedModel : (options[0] || FALLBACK_MODELS[0]);
+  if (options.length === 0) {
+    elements.model.innerHTML = safeOptions
+      .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
+      .join('');
+  }
+
+  elements.model.value = safeOptions.includes(selectedModel)
+    ? selectedModel
+    : safeOptions[0];
 }
 
-function applyConfig(config) {
+function applyConfig(config, { preserveModelSelection = false } = {}) {
   const ai = config?.ai || {};
   const jobSearch = config?.jobSearch || {};
   const preferences = config?.preferences || {};
@@ -124,7 +155,10 @@ function applyConfig(config) {
   elements.searchSalary.value = jobSearch.salaryRange || '';
   elements.searchExperience.value = jobSearch.experience || '';
   elements.searchEducation.value = jobSearch.education || '';
-  setModelOptions(FALLBACK_MODELS, ai.model || FALLBACK_MODELS[0]);
+  setModelOptions(
+    state.availableModels,
+    preserveModelSelection ? elements.model.value : (ai.model || elements.model.value || FALLBACK_MODELS[0])
+  );
 
   const masked = ai.apiKeyMasked || '';
   elements.apiKeyMask.textContent = masked
@@ -330,8 +364,18 @@ async function loadConfig() {
 
 async function saveAIConfig(event) {
   event?.preventDefault?.();
+  if (state.silentSaveTimer) {
+    clearTimeout(state.silentSaveTimer);
+    state.silentSaveTimer = null;
+  }
 
   const apiKey = elements.apiKey.value.trim();
+  const apiKeyError = validateApiKey(apiKey);
+  if (apiKeyError) {
+    setStatus(elements.aiStatus, apiKeyError, 'error');
+    return;
+  }
+
   const payload = {
     ai: {
       model: elements.model.value
@@ -345,8 +389,8 @@ async function saveAIConfig(event) {
   try {
     const saved = await window.desktopApi.saveConfig(payload);
 
-    applyConfig(saved);
-    await loadAvailableModels();
+    applyConfig(saved, { preserveModelSelection: true });
+    await loadAvailableModels(elements.model.value);
     elements.apiKey.value = '';
     setStatus(elements.aiStatus, '已保存。', 'success');
   } catch (error) {
@@ -355,7 +399,28 @@ async function saveAIConfig(event) {
   }
 }
 
+function scheduleSilentSave() {
+  if (state.silentSaveTimer) {
+    clearTimeout(state.silentSaveTimer);
+  }
+
+  state.silentSaveTimer = setTimeout(() => {
+    state.silentSaveTimer = null;
+    saveAIConfigSilently();
+  }, 120);
+}
+
 async function saveAIConfigSilently() {
+  const apiKey = elements.apiKey.value.trim();
+  const apiKeyError = validateApiKey(apiKey);
+  if (apiKeyError) {
+    setStatus(elements.aiStatus, apiKeyError, 'error');
+    return;
+  }
+
+  const saveSeq = state.silentSaveSeq + 1;
+  state.silentSaveSeq = saveSeq;
+
   try {
     const payload = {
       ai: {
@@ -363,27 +428,34 @@ async function saveAIConfigSilently() {
       }
     };
 
-    if (elements.apiKey.value.trim()) {
-      payload.ai.apiKey = elements.apiKey.value.trim();
+    if (apiKey) {
+      payload.ai.apiKey = apiKey;
     }
 
     await window.desktopApi.saveConfig(payload);
     const refreshed = await window.desktopApi.getConfig();
-    applyConfig(refreshed);
-    await loadAvailableModels();
+    if (saveSeq < state.appliedSilentSaveSeq) {
+      return;
+    }
+
+    state.appliedSilentSaveSeq = saveSeq;
+    applyConfig(refreshed, { preserveModelSelection: true });
+    await loadAvailableModels(elements.model.value);
+    setStatus(elements.aiStatus, '已自动保存。', 'success');
   } catch (error) {
     reportError('saveAIConfigSilently', error);
+    setStatus(elements.aiStatus, '自动保存失败，请点击“保存”重试。', 'error');
   }
 }
 
-async function loadAvailableModels() {
+async function loadAvailableModels(preferredModel = '') {
   try {
-    const currentModel = elements.model.value || FALLBACK_MODELS[0];
+    const currentModel = preferredModel || elements.model.value || FALLBACK_MODELS[0];
     const result = await window.desktopApi.getSiliconFlowModels();
     setModelOptions(result?.models || FALLBACK_MODELS, currentModel);
   } catch (error) {
     reportError('loadAvailableModels', error);
-    setModelOptions(FALLBACK_MODELS, elements.model.value || FALLBACK_MODELS[0]);
+    setModelOptions(FALLBACK_MODELS, preferredModel || elements.model.value || FALLBACK_MODELS[0]);
   }
 }
 
@@ -494,10 +566,10 @@ function bindEvents() {
   elements.aiConfigForm.addEventListener('submit', saveAIConfig);
   elements.testConnectionBtn.addEventListener('click', testConnection);
   elements.apiKey.addEventListener('blur', () => {
-    saveAIConfigSilently();
+    scheduleSilentSave();
   });
   elements.model.addEventListener('change', () => {
-    saveAIConfigSilently();
+    scheduleSilentSave();
   });
   elements.loginStartBtn.addEventListener('click', startLogin);
   elements.loginRefreshBtn.addEventListener('click', () => refreshLoginStatus());
