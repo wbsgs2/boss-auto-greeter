@@ -838,6 +838,7 @@ class McpBossManager extends EventEmitter {
 
   detectInstalledService(config = {}) {
     const candidates = this.resolveCandidateDirs(config);
+    console.log('[mcp-boss] searching candidate directories:', candidates);
 
     for (const dir of candidates) {
       const script = this.findScriptInDir(dir);
@@ -848,12 +849,18 @@ class McpBossManager extends EventEmitter {
       this.sourceServicePath = dir;
       this.servicePath = this.getManagedServiceRoot();
       this.serviceScript = script;
+      console.log('[mcp-boss] found bundled service script:', {
+        sourceServicePath: this.sourceServicePath,
+        managedServicePath: this.servicePath,
+        script: this.serviceScript
+      });
       return true;
     }
 
     this.sourceServicePath = '';
     this.servicePath = '';
     this.serviceScript = '';
+    console.warn('[mcp-boss] service script not found. searched directories:', candidates);
     return false;
   }
 
@@ -867,13 +874,30 @@ class McpBossManager extends EventEmitter {
       values.add(path.resolve(text));
     };
 
+    const appPath = this.getAppPathSafe();
+    const serviceDir = __dirname;
+    const projectRoot = path.resolve(serviceDir, '..', '..');
+    const asarRoot = appPath ? path.resolve(appPath) : '';
+    const packagedResourcesRoot = appPath ? path.resolve(appPath, '..') : '';
+
     pushValue(this.sourceServicePath);
     pushValue(this.servicePath);
     pushValue(config.path);
     pushValue(config.cwd);
     pushValue(process.env.MCP_BOSS_PATH);
+    pushValue(appPath);
+    pushValue(path.resolve(projectRoot, 'resources', 'mcp-boss'));
+    pushValue(path.resolve(projectRoot, 'resources', 'mcp-bosszp'));
+    pushValue(path.resolve(serviceDir, '..', '..', 'resources', 'mcp-boss'));
+    pushValue(path.resolve(serviceDir, '..', '..', 'resources', 'mcp-bosszp'));
     pushValue(path.resolve(process.cwd(), 'resources', 'mcp-boss'));
     pushValue(path.resolve(process.cwd(), 'resources', 'mcp-bosszp'));
+    pushValue(path.resolve(asarRoot, 'resources', 'mcp-boss'));
+    pushValue(path.resolve(asarRoot, 'resources', 'mcp-bosszp'));
+    pushValue(path.resolve(packagedResourcesRoot, 'mcp-boss'));
+    pushValue(path.resolve(packagedResourcesRoot, 'mcp-bosszp'));
+    pushValue(path.resolve(packagedResourcesRoot, 'resources', 'mcp-boss'));
+    pushValue(path.resolve(packagedResourcesRoot, 'resources', 'mcp-bosszp'));
     pushValue(path.resolve(process.resourcesPath || '', 'mcp-boss'));
     pushValue(path.resolve(process.resourcesPath || '', 'mcp-bosszp'));
     pushValue(path.resolve(process.resourcesPath || '', 'resources', 'mcp-boss'));
@@ -895,6 +919,18 @@ class McpBossManager extends EventEmitter {
       if (fs.existsSync(path.join(dir, filename))) {
         return filename;
       }
+    }
+
+    return '';
+  }
+
+  getAppPathSafe() {
+    try {
+      if (app?.isReady?.() && typeof app.getAppPath === 'function') {
+        return app.getAppPath();
+      }
+    } catch (_error) {
+      return '';
     }
 
     return '';
@@ -931,6 +967,7 @@ class McpBossManager extends EventEmitter {
 
     const source = this.sourceServicePath;
     const target = this.getManagedServiceRoot();
+    console.log('[mcp-boss] syncing service workspace:', { source, target });
     fs.mkdirSync(target, { recursive: true });
     fs.cpSync(source, target, { recursive: true, force: true });
     this.servicePath = target;

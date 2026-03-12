@@ -259,6 +259,7 @@ function renderLoginUnavailable() {
 function applyManagerStatus(status) {
   const phase = String(status?.phase || '');
   const message = String(status?.message || '').trim();
+  const visibleMessage = message || '暂时无法完成准备，请稍后重试。';
 
   if (elements.installNotice) {
     elements.installNotice.hidden = !(
@@ -276,29 +277,30 @@ function applyManagerStatus(status) {
     setStatus(elements.aiStatus, message);
     elements.loginPhaseBadge.textContent = '准备中';
     elements.loginPhaseBadge.className = 'status-badge waiting';
-    elements.loginStatusText.textContent = '首次使用需要准备环境，请稍后。';
+    elements.loginStatusText.textContent = visibleMessage;
     return;
   }
 
   if (phase === 'starting') {
     elements.loginPhaseBadge.textContent = '准备中';
     elements.loginPhaseBadge.className = 'status-badge waiting';
-    elements.loginStatusText.textContent = '正在准备登录环境，请稍后重试。';
+    elements.loginStatusText.textContent = visibleMessage;
     return;
   }
 
   if (phase === 'not-installed') {
     elements.loginPhaseBadge.textContent = '需要安装';
     elements.loginPhaseBadge.className = 'status-badge error';
-    elements.loginStatusText.textContent = '请先安装登录助手，安装链接已显示在 AI 配置页。';
+    setStatus(elements.aiStatus, visibleMessage, 'error');
+    elements.loginStatusText.textContent = visibleMessage;
     return;
   }
 
   if (phase === 'error') {
-    setStatus(elements.aiStatus, '暂时无法完成准备，请稍后重试。', 'error');
+    setStatus(elements.aiStatus, visibleMessage, 'error');
     elements.loginPhaseBadge.textContent = '稍后重试';
     elements.loginPhaseBadge.className = 'status-badge error';
-    elements.loginStatusText.textContent = '暂时无法完成准备，请稍后重试。';
+    elements.loginStatusText.textContent = visibleMessage;
   }
 }
 
