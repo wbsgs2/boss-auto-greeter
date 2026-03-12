@@ -608,6 +608,14 @@ async function runSearch(event) {
     });
 
     const result = await window.desktopApi.searchMcpBossJobs(payload);
+    if (result?.ok === false) {
+      const errorMessage = result.message || '搜索失败，请稍后重试。';
+      reportError('runSearch', new Error(`search_jobs failed: ${errorMessage}`));
+      elements.searchMeta.textContent = '暂时无法完成搜索。';
+      elements.searchResults.innerHTML = '<div class="empty-state">搜索失败，请稍后再试。</div>';
+      setStatus(elements.searchStatus, errorMessage, 'error');
+      return;
+    }
     renderSearchResults(result || {});
 
     const jobs = Array.isArray(result?.jobs) ? result.jobs : [];

@@ -1366,6 +1366,10 @@ class McpBossManager extends EventEmitter {
       return false;
     }
 
+    if (payload.error || String(payload.status || '').toLowerCase() === 'error') {
+      return false;
+    }
+
     if (Object.keys(payload).length === 0) {
       return false;
     }

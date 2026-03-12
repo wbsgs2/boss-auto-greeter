@@ -1343,7 +1343,7 @@ async def search_jobs(
 
         if result.get("status") == "success":
             data = result.get("data", {})
-            raw_jobs = data.get("jobs", [])
+            raw_jobs = data.get("jobList", [])
 
             # 转换为前端期望的格式
             jobs = []
